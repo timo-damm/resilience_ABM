@@ -51,7 +51,7 @@ class ModelConfig:
     rep_high: float = 0.8 # maximum value of repression
     t_low: int = 40 # time of low repression
     t_transition: int = 5 # time of repression increase
-    t_repend: int = 90 # time of repression decresase
+    t_repend: int = 100 # time of repression decresase
 
 cfg = ModelConfig()
 
@@ -157,7 +157,7 @@ def timestep_update(G, cfg: ModelConfig):
         )
 
         r_old = G.nodes[n]["individual_resilience"]
-        eff_rep = repression_effective_weight(r_old, cfg)  # ← pass cfg
+        eff_rep = repression_effective_weight(r_old, cfg)
 
         r_new = r_old + sat(r_old) * (
             eff_rep                              * G.graph["repression"]
@@ -171,7 +171,16 @@ def timestep_update(G, cfg: ModelConfig):
     for n, r in new_resilience.items():
         G.nodes[n]["individual_resilience"] = r
 
-    # group resilience — reuse eff_rep from last node (or compute from g_old)
+    dropouts = [n for n in nodes if G.nodes[n]["individual_resilience"] < cfg.dropout_threshold]
+    G.remove_nodes_from(dropouts)
+
+    nodes = list(G.nodes())
+
+    # stop simulation if everybody dropped out (to not get errors when trying to compute values later)
+    if len(nodes) == 0:
+        return "group dissolved"
+
+    # group resilience 
     eff_rep_group = repression_effective_weight(g_old, cfg)
     g_new = g_old + sat(g_old) * (
         eff_rep_group                        * G.graph["repression"]
@@ -199,10 +208,6 @@ def timestep_update(G, cfg: ModelConfig):
             cfg.resilience_cob_weight * (micro_mean + G.graph["group_resilience"])
         )
     )
-
-    # dropouts
-    dropouts = [n for n in nodes if G.nodes[n]["individual_resilience"] < cfg.dropout_threshold]
-    G.remove_nodes_from(dropouts)
 
     # new agents joining
     if random.random() < cfg.base_rate * G.graph["repression"]:
@@ -328,3 +333,5 @@ plt.ylabel("Value")
 plt.title("Model Volatility Across 100 Runs")
 plt.tight_layout()
 plt.show()
+
+# %%
