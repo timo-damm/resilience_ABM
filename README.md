@@ -1,17 +1,17 @@
-a multi-level Agent Based Model (ABM) of resilience at the individual and group level
+A multi-level Agent Based Model (ABM) of resilience at the individual and group level. Tailored to social movement organisations (SMOs), and based on extended fieldwork with an SMO. Find more details about the fieldwork [here](https://osf.io/9jbyr/overview?view_only=66495dfcfc2d4f00a2c9c20b89fe1fb6)
 
 more descriptions to follow
 
 ## model overview:
 _environment_:
-- environmental stress (macro level) (level and changes vary by scenario)
-- outside social support (micro level) (distribution varies by scenario)
+- stressors (macro level) (level and changes vary by scenario)
+- external social support (micro level) (distribution varies by scenario)
 
 _variables_:
 - internal social support (meso level) 
-- resilience (symptoms of burnout) (meso level) 
+- SMO resilience (meso level) 
 - causes of burnout (all levels) 
-- resilience (symptoms of burnout) (micro level) 
+- individual resilience (symptoms of burnout) (micro level) 
 
 _mechanisms_:
 - agents dropping out: threshold 
