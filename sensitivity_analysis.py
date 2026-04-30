@@ -6,6 +6,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
+
 
 # importing ABM to run it
 ABM_PATH = Path(__file__).parent / "resilience_ABM.py"
@@ -193,10 +195,10 @@ df.to_csv(Path(__file__).parent / "ofat_summary.csv", index=False)
 # %%
 #plot config
 PARAM_LABELS = {
-    "group_resilience":  "Initial SMO Resilience",
+    "group_resilience":  "Initial Group Resilience",
     "causes_of_burnout": "Initial Causes of Burnout",
-    "rep_low":           "Repression Low (rep_low)",
-    "rep_high":          "Repression High (rep_high)",
+    "rep_low":           "Stressors Low",
+    "rep_high":          "Stressors High",
 }
 COLOR = "steelblue"
 
@@ -287,9 +289,9 @@ for rep_param, val_dict in rep_results.items():
         fontsize=11, y=1.01,
     )
     plt.tight_layout()
-    #out = Path(__file__).parent / f"ofat_{rep_param}_timeseries.png"
-    #fig.savefig(out, dpi=150, bbox_inches="tight")
-    #plt.close(fig)
+    out = Path(__file__).parent / f"ofat_{rep_param}_timeseries.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 # displacement summary for all parameters
 all_params = list(results_store.items()) + [
@@ -328,8 +330,195 @@ fig.suptitle(
     fontsize=11,
 )
 plt.tight_layout()
-#out = Path(__file__).parent / "ofat_displacement_summary.png"
-#fig.savefig(out, dpi=150, bbox_inches="tight")
-#plt.close(fig)
-# %%
+out = Path(__file__).parent / "ofat_displacement_summary.png"
+fig.savefig(out, dpi=150, bbox_inches="tight")
+plt.close(fig)
 
+# GLOBAL SENSITIVITY ANALYSIS (OLS) 
+# %% 
+GSA_N = 10000 # number of runs in the sample 
+rng   = np.random.default_rng(seed=42)
+ 
+# Latin Hypercube sampling (better for near-random draws from multi-dimensional distribution)
+gsa_init_indiv = rng.uniform(-1.0,  1.0, GSA_N)
+gsa_init_group = rng.uniform(-1.0,  1.0, GSA_N)
+gsa_init_cob   = rng.uniform( 0.0,  1.0, GSA_N)
+gsa_rep_low    = rng.uniform( 0.0,  0.5, GSA_N)
+gsa_rep_high   = rng.uniform( 0.5,  1.0, GSA_N)
+ 
+gsa_init_indiv = rng.uniform(-1.0,  1.0, GSA_N)
+gsa_init_group = rng.uniform(-1.0,  1.0, GSA_N)
+gsa_init_cob   = rng.uniform( 0.0,  1.0, GSA_N)
+gsa_rep_low    = rng.uniform( 0.0,  0.5, GSA_N)
+gsa_rep_high   = rng.uniform( 0.5,  1.0, GSA_N)
+ 
+gsa_outcomes = np.empty(GSA_N)
+  
+for i in range(GSA_N):
+    if (i + 1) % 1000 == 0:
+        print(f"  {i + 1}/{GSA_N}")
+ 
+    cfg_gsa          = ModelConfig()
+    cfg_gsa.rep_low  = float(gsa_rep_low[i])
+    cfg_gsa.rep_high = float(gsa_rep_high[i])
+ 
+    G = abm.build_graph(adj_matrix, nodes_df, cfg_gsa)
+    for n in G.nodes():
+        G.nodes[n]["individual_resilience"] = float(gsa_init_indiv[i])
+    G.graph["group_resilience"]  = float(gsa_init_group[i])
+    G.graph["causes_of_burnout"] = float(gsa_init_cob[i])
+ 
+    for t in range(T):
+        G.graph["repression"] = abm.repression_schedule(t, cfg_gsa)
+        abm.timestep_update(G, cfg_gsa)
+ 
+    nodes_left = list(G.nodes())
+    if nodes_left:
+        gsa_outcomes[i] = np.mean(
+            [G.nodes[n]["individual_resilience"] for n in nodes_left]
+        )
+    else:
+        gsa_outcomes[i] = np.nan   # group dissolved
+ 
+# building design matrix and running ols regressiono
+gsa_df = pd.DataFrame({
+    "init_indiv_res": gsa_init_indiv,
+    "init_group_res": gsa_init_group,
+    "init_cob":       gsa_init_cob,
+    "rep_low":        gsa_rep_low,
+    "rep_high":       gsa_rep_high,
+    "outcome":        gsa_outcomes,
+}).dropna()
+ 
+FEATURE_COLS = ["init_indiv_res", "init_group_res", "init_cob",
+                "rep_low", "rep_high"]
+ 
+# standardise inputs (zero mean, unit variance) so coefficients are comparable
+X_raw = gsa_df[FEATURE_COLS].values
+X_std = (X_raw - X_raw.mean(axis=0)) / X_raw.std(axis=0)
+y     = gsa_df["outcome"].values
+ 
+X_with_const = sm.add_constant(X_std)
+ols_model    = sm.OLS(y, X_with_const).fit()
+ 
+print(ols_model.summary())
+ 
+ci      = np.asarray(ols_model.conf_int())   # shape (n_params, 2)
+ols_results = pd.DataFrame({
+    "parameter":   ["intercept"] + FEATURE_COLS,
+    "coefficient": np.asarray(ols_model.params).ravel(),
+    "std_err":     np.asarray(ols_model.bse).ravel(),
+    "t_stat":      np.asarray(ols_model.tvalues).ravel(),
+    "p_value":     np.asarray(ols_model.pvalues).ravel(),
+    "ci_low":      ci[:, 0],
+    "ci_high":     ci[:, 1],
+})
+print("R² =", round(ols_model.rsquared, 4),
+      "Adj-R² =", round(ols_model.rsquared_adj, 4))
+
+# %% 
+# standardised regression coefficients figure
+coef_df = ols_results[ols_results["parameter"] != "intercept"].copy()
+ 
+FEATURE_LABELS = {
+    "init_indiv_res": "Initial\nIndiv. Resilience",
+    "init_group_res": "Initial\nGroup Resilience",
+    "init_cob":       "Initial\nCauses of Burnout",
+    "rep_low":        "Stressors\nLow",
+    "rep_high":       "Stressors\nHigh",
+}
+coef_df["label"] = coef_df["parameter"].map(FEATURE_LABELS)
+ 
+bar_colors = ["tomato" if c < 0 else "steelblue"
+              for c in coef_df["coefficient"]]
+ 
+fig, ax = plt.subplots(figsize=(8, 4))
+bars = ax.bar(
+    coef_df["label"], coef_df["coefficient"],
+    color=bar_colors, edgecolor="white", linewidth=0.6,
+)
+ax.errorbar(
+    coef_df["label"],
+    coef_df["coefficient"],
+    yerr=1.96 * coef_df["std_err"],
+    fmt="none", color="black", capsize=4, lw=1.2,
+)
+ax.axhline(0, color="black", lw=0.8)
+ax.set_ylabel("Standardised OLS coefficient", fontsize=10)
+ax.set_title(
+    f"Global Sensitivity Analysis – Effect on Mean Individual Resilience at T={T}\n"
+    f"OLS on {len(gsa_df):,} runs  |  R² = {ols_model.rsquared:.3f}",
+    fontsize=11,
+)
+ 
+for bar, (_, row) in zip(bars, coef_df.iterrows()):
+    p = row["p_value"]
+    sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+    y_pos = row["coefficient"] + 1.96 * row["std_err"]
+    y_pos += 0.005 if y_pos >= 0 else -0.015
+    ax.text(bar.get_x() + bar.get_width() / 2, y_pos,
+            sig, ha="center", va="bottom", fontsize=9) # p-values below each bar
+ 
+plt.tight_layout()
+out = Path(__file__).parent / "gsa_ols_coefficients.png"
+fig.savefig(out, dpi=150, bbox_inches="tight")
+plt.close(fig)
+print(f"\nSaved {out.name}")
+ 
+# %% 
+#Partial regression plots
+partial_r2 = {}
+
+fig, axes = plt.subplots(1, len(FEATURE_COLS),
+                         figsize=(4 * len(FEATURE_COLS), 4),
+                         sharey=True)
+ 
+for ax, (col_i, feat) in zip(axes, enumerate(FEATURE_COLS)):
+    # residualise y and the focal feature against all other features
+    others = [j for j in range(len(FEATURE_COLS)) if j != col_i]
+    X_others = sm.add_constant(X_std[:, others])
+ 
+    res_y    = sm.OLS(y,              X_others).fit().resid
+    res_feat = sm.OLS(X_std[:, col_i], X_others).fit().resid
+
+    pr2 = np.corrcoef(res_feat, res_y)[0, 1] ** 2
+    partial_r2[feat] = pr2
+
+ 
+    # bin into 40 quantile bins for a clean scatter
+    order   = np.argsort(res_feat)
+    bin_idx = np.array_split(order, 40)
+    bx = [res_feat[b].mean() for b in bin_idx]
+    by = [res_y[b].mean()    for b in bin_idx]
+ 
+    ax.scatter(bx, by, s=18, alpha=0.7, color="steelblue", edgecolors="none")
+ 
+    # overlay OLS line
+    slope = np.polyfit(res_feat, res_y, 1)
+    xline = np.linspace(res_feat.min(), res_feat.max(), 100)
+    ax.plot(xline, np.polyval(slope, xline), color="tomato", lw=1.5)
+ 
+    ax.axhline(0, color="grey", lw=0.5, ls="--")
+    ax.axvline(0, color="grey", lw=0.5, ls="--")
+    ax.set_xlabel(FEATURE_LABELS[feat], fontsize=9)
+    if col_i == 0:
+        ax.set_ylabel("Residual outcome", fontsize=9)
+    ax.set_title(FEATURE_LABELS[feat], fontsize=9)
+ 
+fig.suptitle(
+    "Partial Regression Plots – Global Sensitivity Analysis\n", #binned features, means each feature is paralleled out against the rest
+    fontsize=11,
+)
+plt.tight_layout()
+out = Path(__file__).parent / "gsa_partial_regression.png"
+fig.savefig(out, dpi=150, bbox_inches="tight")
+plt.close(fig)
+print(f"Saved {out.name}")
+
+
+# %%
+#partial R squared
+for feat, pr2 in partial_r2.items():
+    print(f"  {FEATURE_LABELS[feat].replace(chr(10), ' '):35s}  partial R² = {pr2:.4f}")
+
+# %%
