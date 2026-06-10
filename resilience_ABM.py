@@ -26,6 +26,7 @@ class ModelConfig:
     internal_support_weight: float = 0.01 # internal social support effect weight (on resilience)
 
     #resilience
+    #initiation function for resilience distribution here
     micro_meso_weight: float = 0.01 # micro resilience on meso resilience effect weight
     meso_micro_weight: float = 0.01 # meso resilience on micro resilience effect weight
     resilience_cob_weight: float = -0.01
@@ -34,7 +35,7 @@ class ModelConfig:
     #causes of burnout
     causes_burnout_weight: float = -0.01 # causes of burnout effect weight on resilience
 
-    #repression (think stressors in model)
+    #repression (think stresors in model)
     repression_weight = -0.01 #weight of repression on everything
 
     #network dynamics
@@ -47,14 +48,15 @@ class ModelConfig:
     social_support_bias = 0.1 #slight bias for higher social support than currently existing
 
     #repression schedule/intensity
-    rep_low: float = 0.3 # minimum value of repression
-    rep_high: float = 1.0 # maximum value of repression
+    rep_low: float = 0.2 # minimum value of repression
+    rep_high: float = 0.8 # maximum value of repression
     t_low: int = 40 # time of low repression
     t_transition: int = 5 # time of repression increase
-    t_repend: int = 100 # time of repression decresase
+    t_repend: int = 150 # time of repression decresase
+    repression_weight = -0.1 #weight of repression on everything
 
     # simulation
-    T: int = 100
+    T: int = 200
     num_runs: int = 100
 
 cfg = ModelConfig()
@@ -75,7 +77,7 @@ def build_graph(adj_matrix: pd.DataFrame,
         )
 
     G.graph.update({
-        "internal_social_support": 0.2,
+        "internal_social_support": 0.0, #basically just a placeholder bc individual contributions are computed in first step
         "group_resilience": 0.0,
         "causes_of_burnout": 0.2,
         "repression": cfg.rep_low,
@@ -140,21 +142,53 @@ def timestep_update(G, cfg: ModelConfig):
     causes_burnout = G.graph["causes_of_burnout"]
     g_old = G.graph["group_resilience"]
     new_resilience = {}
+    support_received = {n: 0.0 for n in nodes}
+    support_given = {n: 0.0 for n in nodes}
+    support_givers = {n: 0 for n in nodes}  # count how many neighbours gave to each node
+
+    for n in nodes:
+        r_n = G.nodes[n]["individual_resilience"]
+        neighbors = list(G.neighbors(n))
+        if not neighbors or r_n < cfg.support_threshold:
+            continue
+
+        need_contribution = max(0.0, min(cfg.contribution_max,
+            cfg.tau - G.nodes[n]["social_support"]
+        ))
+
+        for nb in neighbors:
+            r_nb = G.nodes[nb]["individual_resilience"]
+            support_to_nb = max(0.0,
+                need_contribution - r_nb + cfg.repression_weight * G.graph["repression"]
+            )
+            support_received[nb] += support_to_nb
+            support_given[n] += support_to_nb
+            support_givers[nb] += 1
+
+    # normalise by number of givers so degree doesn't inflate received support
+    for n in nodes:
+        if support_givers[n] > 0:
+            support_received[n] /= support_givers[n]
+
+    mean_iss = np.mean(list(support_received.values()))
+    G.graph["internal_social_support"] = mean_iss
+
+
+    # causes of burnout
+    G.graph["causes_of_burnout"] = max(0.0,
+        G.graph["causes_of_burnout"] + sat(G.graph["causes_of_burnout"]) * (
+            cfg.resilience_cob_weight * (micro_mean + G.graph["group_resilience"])
+        )
+    )
 
     for n in nodes:
         external_support = G.nodes[n]["social_support"]
-        neighbors = list(G.neighbors(n))
-        neighbor_resilience = (
-            np.mean([G.nodes[j]["individual_resilience"] for j in neighbors])
-            if neighbors else 0.0
-        )
-
         r_old = G.nodes[n]["individual_resilience"]
 
         r_new = r_old + sat(r_old) * (
             cfg.repression_weight                * G.graph["repression"]
             + cfg.external_support_weight        * external_support
-            + cfg.internal_support_weight        * internal_support * neighbor_resilience
+            + cfg.internal_support_weight        * support_received[n]
             + cfg.meso_micro_weight              * g_old
             + cfg.causes_burnout_weight          * causes_burnout
         )
@@ -181,32 +215,6 @@ def timestep_update(G, cfg: ModelConfig):
         + cfg.external_support_weight        * mean_ext_sup
     )
     G.graph["group_resilience"] = g_new
-
-    # internal social support
-    contributions = []
-    for n in nodes:
-        neighbors = list(G.neighbors(n))
-        if neighbors:
-            neighbor_resilience = np.mean([G.nodes[j]["individual_resilience"] for j in neighbors])
-        else:
-            neighbor_resilience = 0.0 #unsure if this is needed because isolated people would not be part of the group?
-
-        need_contribution = max(0.0, min(cfg.contribution_max, cfg.tau - G.nodes[n]["social_support"]))
-
-        contributions.append(max(0.0, need_contribution - neighbor_resilience)) #contributions depend on neighbour resilience, supporting neighbours with low resilience more
-
-        mean_contribution = sum(contributions) / len(contributions)
-        G.graph["internal_social_support"] = (
-        mean_contribution
-            + sat(mean_contribution) * cfg.resilience_iss_weight * G.graph["group_resilience"] + cfg.repression_iss_weight * G.graph["repression"]
-    )
-
-    # causes of burnout
-    G.graph["causes_of_burnout"] = max(0.0,
-        G.graph["causes_of_burnout"] + sat(G.graph["causes_of_burnout"]) * (
-            cfg.resilience_cob_weight * (micro_mean + G.graph["group_resilience"])
-        )
-    )
 
     # new agents joining
     if random.random() < cfg.base_rate * G.graph["repression"]:
@@ -239,6 +247,8 @@ def timestep_update(G, cfg: ModelConfig):
             if random.random() < addition_prob:
                 G.add_edge(n, target)
 
+    return support_received, support_given
+
 #%% 
 # logging all variables
 def empty_history() -> dict:
@@ -251,27 +261,24 @@ def empty_history() -> dict:
         "causes_of_burnout": [],
         "repression": [],
         "num_agents": [],
-        "mean_external_social_support": []
+        "mean_external_social_support": [],
+        # cumulative support tracking — one dict per node, accumulated across t
+        "cumulative_support_received": {},   # {node_id: total received}
+        "cumulative_support_given": {},      # {node_id: total given}
     }
 
-def log_state(G, t, history):
+def log_state(G, t, history, support_received, support_given):
     nodes = list(G.nodes())
 
     if nodes:
         indiv_res = [G.nodes[n]["individual_resilience"] for n in nodes]
         mean_indiv_res = np.mean(indiv_res)
         std_indiv_res = np.std(indiv_res)
-
-        external_support = [
-            G.nodes[n]["social_support"]
-            for n in nodes
-            if "social_support" in G.nodes[n]
-        ]
+        external_support = [G.nodes[n]["social_support"] for n in nodes
+                            if "social_support" in G.nodes[n]]
         mean_external_support = np.mean(external_support) if external_support else 0.0
     else:
-        mean_indiv_res = 0.0
-        std_indiv_res = 0.0
-        mean_external_support = 0.0
+        mean_indiv_res = std_indiv_res = mean_external_support = 0.0
 
     history["t"].append(t)
     history["group_resilience"].append(G.graph["group_resilience"])
@@ -282,6 +289,16 @@ def log_state(G, t, history):
     history["repression"].append(G.graph["repression"])
     history["num_agents"].append(len(nodes))
     history["mean_external_social_support"].append(mean_external_support)
+
+    # accumulate per-node support across timesteps
+    for n, val in support_received.items():
+        history["cumulative_support_received"][n] = (
+            history["cumulative_support_received"].get(n, 0.0) + val
+        )
+    for n, val in support_given.items():
+        history["cumulative_support_given"][n] = (
+            history["cumulative_support_given"].get(n, 0.0) + val
+        )
 
 # %%
 # running the whole model (for testing with single run, just set num_runs = 1)
@@ -298,8 +315,11 @@ def run_all(adj_matrix, nodes_df, cfg):
         history = empty_history()
         for t in range(cfg.T):
             G.graph["repression"] = repression_schedule(t, cfg)
-            timestep_update(G, cfg)
-            log_state(G, t, history)
+            result = timestep_update(G, cfg)
+            if result == "group dissolved":
+                break
+            support_received, support_given = result
+            log_state(G, t, history, support_received, support_given)
         for k in keys:
             results[k].append(history[k])
         final_resilience_distributions.append(
@@ -374,4 +394,32 @@ def plot_individual_resilience_distributions(final_resilience_distributions: lis
     plt.show()
 
 plot_individual_resilience_distributions(final_resilience_distributions)
+# %%
+def plot_support_distributions(final_support_received, final_support_given):
+    from scipy.stats import gaussian_kde
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    for data, ax, title in [
+        (final_support_received, axes[0], "Cumulative support received"),
+        (final_support_given,    axes[1], "Cumulative support given"),
+    ]:
+        all_values = np.concatenate(data)
+        x = np.linspace(all_values.min(), all_values.max(), 300)
+
+        for run_values in data:
+            if len(run_values) < 2:
+                continue
+            kde = gaussian_kde(run_values)
+            ax.plot(x, kde(x), color="steelblue", alpha=0.15, linewidth=0.8)
+
+        kde_pooled = gaussian_kde(all_values)
+        ax.plot(x, kde_pooled(x), color="red", linewidth=2,
+                label=f"pooled (n={len(all_values)})")
+        ax.set_title(title)
+        ax.set_xlabel("cumulative support")
+        ax.set_ylabel("density")
+        ax.legend()
+
+    plt.tight_layout()
+    plt.show()
 # %%
