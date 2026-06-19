@@ -20,40 +20,39 @@ nodes_df = pd.read_csv(BASE_DIR / "synthetic_nodes.csv")
 @dataclass
 class ModelConfig:
     # social support
-    tau: float = 1.0 #total need for support
+    tau: float = 0.8 #total need for support
     contribution_max = 1.0 #group norm for how much support is adequate at max (minimum defined in contributions function)
-    external_support_weight: float = 0.01 # external social support effect weight (on resilience)
-    internal_support_weight: float = 0.01 # internal social support effect weight (on resilience)
+    external_support_weight: float = 0.015 # external social support effect weight (on resilience)
+    internal_support_weight: float = 0.015 # internal social support effect weight (on resilience)
 
     #resilience
     #initiation function for resilience distribution here
-    micro_meso_weight: float = 0.01 # micro resilience on meso resilience effect weight
-    meso_micro_weight: float = 0.01 # meso resilience on micro resilience effect weight
-    resilience_cob_weight: float = -0.01
-    resilience_iss_weight: float = 0.01 #
+    micro_meso_weight: float = 0.015 # micro resilience on meso resilience effect weight
+    meso_micro_weight: float = 0.015 # meso resilience on micro resilience effect weight
+    resilience_cob_weight: float = 0.015
+    resilience_iss_weight: float = 0.015 #
 
     #causes of burnout
-    causes_burnout_weight: float = -0.01 # causes of burnout effect weight on resilience
+    causes_burnout_weight: float = 0.015 # causes of burnout effect weight on resilience
 
     #repression (think stresors in model)
-    repression_weight = -0.01 #weight of repression on everything
+    repression_weight = 0.015 #weight of repression on everything
 
     #network dynamics
-    dropout_threshold: float = -0.8 # individual resilience threshold for dropping out
-    support_threshold: float = -0.5 # individual resilience threshold for supporting others
-    edge_base_prob: float = 0.1 #base probability of forming an edge
-    edge_resilience_weight: float = 0.06 # resilience effect weight on edge formation probability
-    base_rate: float = 0.217 # base rate of agents joining
+    dropout_weight: float = 0.02 # individual resilience multiplied with this weight gives dropout probability
+    support_threshold: float = -0.6 # individual resilience threshold for supporting others
+    edge_base_prob: float = 0.001 #base probability of forming an edge
+    edge_resilience_weight: float = 0.01 # resilience effect weight on edge formation probability
+    base_rate: float = 0.25 # base rate of agents joining
     new_agent_connections: int = 2 # number of new connections by new agents
     social_support_bias = 0.1 #slight bias for higher social support than currently existing
 
     #repression schedule/intensity
     rep_low: float = 0.2 # minimum value of repression
     rep_high: float = 0.8 # maximum value of repression
-    t_low: int = 40 # time of low repression
-    t_transition: int = 5 # time of repression increase
-    t_repend: int = 150 # time of repression decresase
-    repression_weight = -0.1 #weight of repression on everything
+    t_low: int = 14 # time of low repression
+    t_transition: int = 3 # time of repression increase
+    t_repend: int = 70 # time of repression decresase
 
     # simulation
     T: int = 200
@@ -84,9 +83,6 @@ def build_graph(adj_matrix: pd.DataFrame,
     })
     return G # builds graph from synthetic data
 
-def sat(r: float) -> float:
-    return 1 - r ** 2 # saturation function for variables near bounds
-
 def repression_schedule(t: int, cfg: ModelConfig) -> float:
     lo, hi = cfg.rep_low, cfg.rep_high
     if t < cfg.t_low:
@@ -98,6 +94,10 @@ def repression_schedule(t: int, cfg: ModelConfig) -> float:
     elif t < cfg.t_repend + cfg.t_transition:
         return hi - (hi - lo) * (t - cfg.t_repend) / cfg.t_transition
     return lo # repression scheduling
+
+def sat(r: float) -> float:
+    return 1 - r ** 2 # saturation function for variables near bounds
+
 
 
 # %% 
@@ -122,6 +122,7 @@ nx.draw_networkx_edges(G, pos, alpha=0.4) # preliminary network visualisation
 degrees = dict(G.degree())
 deg_values = np.array(list(degrees.values()))
 
+print(f"Number of nodes: {len(G.nodes)}")
 print(f"Average degree: {deg_values.mean()}")
 print(f"Min degree: {deg_values.min()}")
 print(f"Max degree: {deg_values.max()}")
@@ -136,7 +137,6 @@ plt.hist(deg_values, bins=20) # degree distribution
 def timestep_update(G, cfg: ModelConfig):
     nodes = list(G.nodes())
 
-    internal_support = G.graph["internal_social_support"]
     micro_mean = np.mean([G.nodes[n]["individual_resilience"] for n in nodes])
     mean_ext_sup = np.mean([G.nodes[n]["social_support"] for n in nodes])
     causes_burnout = G.graph["causes_of_burnout"]
@@ -144,7 +144,9 @@ def timestep_update(G, cfg: ModelConfig):
     new_resilience = {}
     support_received = {n: 0.0 for n in nodes}
     support_given = {n: 0.0 for n in nodes}
-    support_givers = {n: 0 for n in nodes}  # count how many neighbours gave to each node
+    support_givers = {n: 0 for n in nodes} 
+    n_dropout = 0
+    n_joined = 0
 
     for n in nodes:
         r_n = G.nodes[n]["individual_resilience"]
@@ -158,9 +160,9 @@ def timestep_update(G, cfg: ModelConfig):
 
         for nb in neighbors:
             r_nb = G.nodes[nb]["individual_resilience"]
-            support_to_nb = max(0.0,
-                need_contribution - r_nb + cfg.repression_weight * G.graph["repression"]
-            )
+            support_to_nb = max(0.0, min(cfg.contribution_max,
+                need_contribution - r_nb - cfg.repression_weight * G.graph["repression"]
+            ))
             support_received[nb] += support_to_nb
             support_given[n] += support_to_nb
             support_givers[nb] += 1
@@ -177,27 +179,36 @@ def timestep_update(G, cfg: ModelConfig):
     # causes of burnout
     G.graph["causes_of_burnout"] = max(0.0,
         G.graph["causes_of_burnout"] + sat(G.graph["causes_of_burnout"]) * (
-            cfg.resilience_cob_weight * (micro_mean + G.graph["group_resilience"])
+            - cfg.resilience_cob_weight * (micro_mean + g_old)  
+            #+ cfg.repression_weight * G.graph["repression"]
         )
     )
 
+    #individual resilience
     for n in nodes:
         external_support = G.nodes[n]["social_support"]
         r_old = G.nodes[n]["individual_resilience"]
 
         r_new = r_old + sat(r_old) * (
-            cfg.repression_weight                * G.graph["repression"]
             + cfg.external_support_weight        * external_support
             + cfg.internal_support_weight        * support_received[n]
             + cfg.meso_micro_weight              * g_old
-            + cfg.causes_burnout_weight          * causes_burnout
+            - cfg.causes_burnout_weight          * causes_burnout
+            - cfg.repression_weight              * G.graph["repression"]
         )
         new_resilience[n] = r_new
 
     for n, r in new_resilience.items():
         G.nodes[n]["individual_resilience"] = r
 
-    dropouts = [n for n in nodes if G.nodes[n]["individual_resilience"] < cfg.dropout_threshold]
+    dropouts = []
+    for n in nodes:
+        r_n = G.nodes[n]["individual_resilience"]
+        if r_n < 0:
+            dropout_prob = cfg.dropout_weight * (-r_n)
+            if random.random() < dropout_prob:
+                dropouts.append(n)
+    n_dropout += len(dropouts)
     G.remove_nodes_from(dropouts)
 
     nodes = list(G.nodes())
@@ -208,16 +219,17 @@ def timestep_update(G, cfg: ModelConfig):
 
     # group resilience 
     g_new = g_old + sat(g_old) * (
-        cfg.repression_weight                * G.graph["repression"]
-        + cfg.internal_support_weight        * internal_support
+        #+ cfg.internal_support_weight        * mean_iss
         + cfg.micro_meso_weight              * micro_mean
-        + cfg.causes_burnout_weight          * causes_burnout
         + cfg.external_support_weight        * mean_ext_sup
+        - cfg.repression_weight              * G.graph["repression"]
+        - cfg.causes_burnout_weight          * causes_burnout
     )
     G.graph["group_resilience"] = g_new
 
     # new agents joining
     if random.random() < cfg.base_rate * G.graph["repression"]:
+        n_joined += 1
         new_id = max(G.nodes()) + 1 if G.nodes() else 1
         existing_ss = [G.nodes[n]["social_support"] for n in G.nodes()]
         G.add_node(
@@ -247,7 +259,8 @@ def timestep_update(G, cfg: ModelConfig):
             if random.random() < addition_prob:
                 G.add_edge(n, target)
 
-    return support_received, support_given
+    return support_received, support_given, n_dropout, n_joined
+
 
 #%% 
 # logging all variables
@@ -307,10 +320,12 @@ def run_all(adj_matrix, nodes_df, cfg):
             "causes_of_burnout", "mean_external_social_support", "repression"]
     results = {k: [] for k in keys}
     final_resilience_distributions = []
+    network_stats = []  # collect per-run final network stats
 
     for run in range(cfg.num_runs):
-        if (run + 1) % 10 == 0:
-            print(f"  run {run + 1}/{cfg.num_runs}")
+        total_dropout = 0
+        total_joined = 0
+
         G = build_graph(adj_matrix, nodes_df, cfg)
         history = empty_history()
         for t in range(cfg.T):
@@ -318,33 +333,86 @@ def run_all(adj_matrix, nodes_df, cfg):
             result = timestep_update(G, cfg)
             if result == "group dissolved":
                 break
-            support_received, support_given = result
+            support_received, support_given, n_dropout, n_joined = result
+            total_dropout += n_dropout
+            total_joined += n_joined
             log_state(G, t, history, support_received, support_given)
+
         for k in keys:
-            results[k].append(history[k])
+            arr = history[k]
+            if len(arr) < cfg.T:
+                arr = arr + [np.nan] * (cfg.T - len(arr))
+            results[k].append(arr)
+
+        nodes_left = list(G.nodes())
         final_resilience_distributions.append(
-            np.array([G.nodes[n]["individual_resilience"] for n in G.nodes()])
+            np.array([G.nodes[n]["individual_resilience"] for n in nodes_left])
+            if nodes_left else np.array([np.nan])
         )
 
-    return {k: np.array(v) for k, v in results.items()}, final_resilience_distributions
+        # capture final network state of this run
+        if len(nodes_left) > 1:
+            deg_values = np.array([d for _, d in G.degree()])
+            network_stats.append({
+                "num_nodes":         len(nodes_left),
+                "mean_degree":       deg_values.mean(),
+                "min_degree":        deg_values.min(),
+                "max_degree":        deg_values.max(),
+                "density":           nx.density(G),
+                "avg_clustering":    nx.average_clustering(G),
+                "total_dropout":  total_dropout,
+                "total_joined":   total_joined,
+            })
+        else:
+            network_stats.append({
+                "num_nodes": 0, "mean_degree": np.nan, "min_degree": np.nan,
+                "max_degree": np.nan, "density": np.nan, "avg_clustering": np.nan,
+            })
 
-results, final_resilience_distributions = run_all(adj_matrix, nodes_df, cfg)
+    return {k: np.array(v) for k, v in results.items()}, final_resilience_distributions, network_stats
+
+results, final_resilience_distributions, network_stats = run_all(adj_matrix, nodes_df, cfg)
 
 # %%
 # visualisations
 plt.figure(figsize=(10, 6))
 alpha_val = 0.07
-
 plt.plot(results["group_resilience"].T,            alpha=alpha_val, color="tab:blue")
 plt.plot(results["mean_individual_resilience"].T,  alpha=alpha_val, color="tab:orange")
 plt.plot(results["causes_of_burnout"].T,           alpha=alpha_val, color="tab:red")
 plt.plot(results["internal_social_support"].T,     alpha=alpha_val, color="tab:green")
 plt.plot(results["mean_external_social_support"].T,alpha=alpha_val, color="tab:purple")
 plt.plot(results["repression"].T,                  alpha=alpha_val, color="black")
-
+plt.ylim(-1, 1)
 plt.xlabel("Time")
 plt.ylabel("Value")
 plt.title("Model Volatility Across 100 Runs")
+plt.tight_layout()
+plt.show()
+
+# %%
+plt.figure(figsize=(10, 6))
+alpha_val = 0.05
+
+plot_vars = [
+    ("group_resilience",           "tab:blue"),
+    ("mean_individual_resilience", "tab:orange"),
+    ("causes_of_burnout",          "tab:red"),
+    ("internal_social_support",    "tab:green"),
+    ("mean_external_social_support","tab:purple"),
+    ("repression",                 "black"),
+]
+
+for key, color in plot_vars:
+    arr = results[key]  # shape (num_runs, T)
+    plt.plot(arr.T, alpha=alpha_val, color=color, linewidth=0.8)
+    mean_trajectory = np.nanmean(arr, axis=0)
+    plt.plot(mean_trajectory, alpha=1.0, color=color, linewidth=2)
+
+plt.ylim(-1, 1)
+plt.xlabel("Time")
+plt.ylabel("Value")
+plt.title("Empirical Scenario")
 plt.tight_layout()
 plt.show()
 
@@ -366,6 +434,11 @@ def summarise_final_step(results: dict[str, np.ndarray]) -> pd.DataFrame:
 
 summary = summarise_final_step(results)
 print(summary)
+
+# comparing network variables to initial network
+stats_df = pd.DataFrame(network_stats)
+print(stats_df.agg(["mean", "min", "max", "std"]).round(3).to_string())
+
 # %%
 # resilience distributions
 def plot_individual_resilience_distributions(final_resilience_distributions: list[np.ndarray]):
@@ -388,7 +461,7 @@ def plot_individual_resilience_distributions(final_resilience_distributions: lis
 
     ax.set_xlabel("individual resilience")
     ax.set_ylabel("density")
-    ax.set_title("Distribution of individual resilience at t=100 across 100 runs")
+    ax.set_title("Distribution of individual resilience at t=200 across 100 runs")
     ax.legend()
     plt.tight_layout()
     plt.show()
@@ -422,4 +495,6 @@ def plot_support_distributions(final_support_received, final_support_given):
 
     plt.tight_layout()
     plt.show()
+# %%
+plot_support_distributions(results["cumulative_support_given"].T , results["cumulative_support_received"].T)
 # %%
