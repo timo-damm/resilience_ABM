@@ -20,7 +20,7 @@ nodes_df = pd.read_csv(BASE_DIR / "synthetic_nodes.csv")
 @dataclass
 class ModelConfig:
     # social support
-    tau: float = 0.8 #total need for support
+    tau: float = 1.0 #total need for support
     contribution_max = 1.0 #group norm for how much support is adequate at max (minimum defined in contributions function)
     external_support_weight: float = 0.015 # external social support effect weight (on resilience)
     internal_support_weight: float = 0.015 # internal social support effect weight (on resilience)
@@ -179,7 +179,7 @@ def timestep_update(G, cfg: ModelConfig):
     # causes of burnout
     G.graph["causes_of_burnout"] = max(0.0,
         G.graph["causes_of_burnout"] + sat(G.graph["causes_of_burnout"]) * (
-            - cfg.resilience_cob_weight * (micro_mean + g_old)  
+             - cfg.resilience_cob_weight * (micro_mean + g_old)  
             #+ cfg.repression_weight * G.graph["repression"]
         )
     )
@@ -219,11 +219,11 @@ def timestep_update(G, cfg: ModelConfig):
 
     # group resilience 
     g_new = g_old + sat(g_old) * (
-        #+ cfg.internal_support_weight        * mean_iss
+        + cfg.internal_support_weight        * mean_iss
         + cfg.micro_meso_weight              * micro_mean
-        + cfg.external_support_weight        * mean_ext_sup
+        #+ cfg.external_support_weight        * mean_ext_sup
         - cfg.repression_weight              * G.graph["repression"]
-        - cfg.causes_burnout_weight          * causes_burnout
+        #- cfg.causes_burnout_weight          * causes_burnout
     )
     G.graph["group_resilience"] = g_new
 
@@ -285,7 +285,7 @@ def log_state(G, t, history, support_received, support_given):
 
     if nodes:
         indiv_res = [G.nodes[n]["individual_resilience"] for n in nodes]
-        mean_indiv_res = np.mean(indiv_res)
+        mean_indiv_res = np.median(indiv_res)
         std_indiv_res = np.std(indiv_res)
         external_support = [G.nodes[n]["social_support"] for n in nodes
                             if "social_support" in G.nodes[n]]
@@ -406,13 +406,13 @@ plot_vars = [
 for key, color in plot_vars:
     arr = results[key]  # shape (num_runs, T)
     plt.plot(arr.T, alpha=alpha_val, color=color, linewidth=0.8)
-    mean_trajectory = np.nanmean(arr, axis=0)
-    plt.plot(mean_trajectory, alpha=1.0, color=color, linewidth=2)
+    median_trajectory = np.nanmedian(arr, axis=0)
+    plt.plot(median_trajectory, alpha=1.0, color=color, linewidth=2)
 
 plt.ylim(-1, 1)
 plt.xlabel("Time")
 plt.ylabel("Value")
-plt.title("Empirical Scenario")
+plt.title("Social Support Norm With Much Longer Repression")
 plt.tight_layout()
 plt.show()
 
@@ -434,6 +434,25 @@ def summarise_final_step(results: dict[str, np.ndarray]) -> pd.DataFrame:
 
 summary = summarise_final_step(results)
 print(summary)
+
+fig, ax = plt.subplots(figsize=(3, 2.5))
+ax.axis("off")
+
+legend_items = [
+    ("tab:blue",   "group resilience"),
+    ("tab:orange", "mean individual resilience"),
+    ("tab:red",    "causes of burnout"),
+    ("tab:green",  "internal social support"),
+    ("tab:purple", "mean external social support"),
+    ("black",      "repression"),
+]
+
+handles = [plt.Line2D([0], [0], color=color, linewidth=2, label=label)
+           for color, label in legend_items]
+
+ax.legend(handles=handles, loc="center", frameon=False, fontsize=10)
+plt.tight_layout()
+plt.show()
 
 # comparing network variables to initial network
 stats_df = pd.DataFrame(network_stats)
