@@ -52,7 +52,7 @@ class ModelConfig:
     rep_high: float = 0.8 # maximum value of repression
     t_low: int = 14 # time of low repression
     t_transition: int = 3 # time of repression increase
-    t_repend: int = 70 # time of repression decresase
+    t_repend: int = 85 # time of repression decresase
 
     # simulation
     T: int = 200

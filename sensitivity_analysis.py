@@ -7,8 +7,143 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from scipy.integrate import solve_ivp
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
+
+# %%
+# phase state visualisation based on equations
+
+def sat(x):
+    return 1 - x**2
+
+# --------------------------------------------------
+# ODE system
+# --------------------------------------------------
+
+def rhs(t, y, rho):
+    rhat, R, B = y
+
+    drhat = (
+        sat(rhat)
+        * 0.015
+        * (-rho + 0.6 + 0.39 - rhat + R - B)
+    )
+
+    dR = (
+        sat(R)
+        * 0.015
+        * (-rho + 0.39)
+    )
+
+    dB = (
+        sat(B)
+        * 0.015
+        * (-rhat - R)
+    )
+
+    return [drhat, dR, dB]
 
 
+# --------------------------------------------------
+# Parameters
+# --------------------------------------------------
+
+tspan = (0, 600)
+t = np.linspace(*tspan, 400)
+
+rho_values = np.linspace(0, 1, 50)
+
+rng = np.random.default_rng(2)
+
+initial_conditions = np.column_stack([
+    rng.uniform(-0.1, 0.1, 10),   # rhat
+    rng.uniform(-0, 0, 10),   # R
+    rng.uniform(0, 1, 10)     # B
+])
+
+# --------------------------------------------------
+# Plot
+# --------------------------------------------------
+
+fig = plt.figure(figsize=(11,9))
+ax = fig.add_subplot(111, projection="3d")
+
+cmap = plt.cm.coolwarm
+norm = plt.Normalize(-1,1)
+
+for rho in rho_values:
+
+    for y0 in initial_conditions:
+
+        sol = solve_ivp(
+            rhs,
+            tspan,
+            y0,
+            args=(rho,),
+            t_eval=t,
+            rtol=1e-8,
+            atol=1e-8,
+        )
+
+        rhat = sol.y[0]
+        R = sol.y[1]
+        B = sol.y[2]
+
+        rho_line = np.full_like(B, rho)
+
+        # x = B, y = rho, z = rhat
+        points = np.array([B, rho_line, rhat]).T.reshape(-1,1,3)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+        lc = Line3DCollection(
+            segments,
+            cmap=cmap,
+            norm=norm,
+            linewidth=2
+        )
+
+        lc.set_array(R[:-1])
+
+        ax.add_collection3d(lc)
+
+        # Direction arrow every ~80 steps
+        step = 80
+        for i in range(step, len(B)-1, step):
+
+            dB = B[i+1] - B[i]
+            dr = rhat[i+1] - rhat[i]
+
+            ax.quiver(
+                B[i],      # x
+                rho,       # y
+                rhat[i],   # z
+                dB,        # dx
+                0,         # dy (rho is fixed)
+                dr,        # dz
+                length=0.05,
+                normalize=True,
+                color='k',
+                arrow_length_ratio=0.4
+            )
+
+# Axis limits
+ax.set_xlim(0,1)
+ax.set_ylim(0,1)
+ax.set_zlim(-1,1)
+
+ax.set_xlabel(r"$B$", fontsize=14)
+ax.set_ylabel(r"$\rho$", fontsize=14)
+ax.set_zlabel(r"$\hat r$", fontsize=14)
+
+mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+mappable.set_array([])
+cbar = plt.colorbar(mappable, ax=ax, pad=0.1)
+cbar.set_label(r"$R$", fontsize=14)
+
+plt.tight_layout()
+plt.show()
+
+# %%
 # importing ABM to run it
 ABM_PATH = Path(__file__).parent / "resilience_ABM.py"
 
