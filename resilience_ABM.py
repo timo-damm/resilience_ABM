@@ -514,6 +514,3 @@ def plot_support_distributions(final_support_received, final_support_given):
 
     plt.tight_layout()
     plt.show()
-# %%
-plot_support_distributions(results["cumulative_support_given"].T , results["cumulative_support_received"].T)
-# %%
