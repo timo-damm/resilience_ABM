@@ -1,13 +1,14 @@
 # ------- PREPARATION ---------
 # %%
 # preparation and setup
-import networkx as nx                         
-import numpy as np                             
-import matplotlib.pyplot as plt 
-import pandas as pd
 import random
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+import pandas as pd
 
 # import data
 BASE_DIR = Path(__file__).parent
@@ -30,7 +31,7 @@ class ModelConfig:
     micro_meso_weight: float = 0.015 # micro resilience on meso resilience effect weight
     meso_micro_weight: float = 0.015 # meso resilience on micro resilience effect weight
     resilience_cob_weight: float = 0.015
-    resilience_iss_weight: float = 0.015 #
+    resilience_iss_weight: float = 0.015 
 
     #causes of burnout
     causes_burnout_weight: float = 0.015 # causes of burnout effect weight on resilience
@@ -44,19 +45,19 @@ class ModelConfig:
     edge_base_prob: float = 0.001 #base probability of forming an edge
     edge_resilience_weight: float = 0.01 # resilience effect weight on edge formation probability
     base_rate: float = 0.25 # base rate of agents joining
-    new_agent_connections: int = 2 # number of new connections by new agents
-    social_support_bias = 0.1 #slight bias for higher social support than currently existing
+    new_agent_connections: int = 1 # number of new connections by new agents
+    social_support_bias = 0.0 #slight bias for higher social support than currently existing
 
     #repression schedule/intensity
     rep_low: float = 0.2 # minimum value of repression
     rep_high: float = 0.8 # maximum value of repression
     t_low: int = 14 # time of low repression
     t_transition: int = 3 # time of repression increase
-    t_repend: int = 85 # time of repression decresase
+    t_repend: int = 70 # time of repression decresase (purely empirical: 70)
 
     # simulation
-    T: int = 200
-    num_runs: int = 100
+    T: int = 300
+    num_runs: int = 20
 
 cfg = ModelConfig()
 
@@ -153,12 +154,17 @@ def timestep_update(G, cfg: ModelConfig):
         neighbors = list(G.neighbors(n))
         if not neighbors or r_n < cfg.support_threshold:
             continue
-
+        
+        #use this need contribution for empirical variant
         need_contribution = max(0.0, min(cfg.contribution_max,
             cfg.tau - G.nodes[n]["social_support"]
         ))
 
         for nb in neighbors:
+            #use this need contribution for mutual support variant
+            #need_contribution = max(0.0, min(cfg.contribution_max,
+            #    cfg.tau - G.nodes[nb]["social_support"]
+            #))    
             r_nb = G.nodes[nb]["individual_resilience"]
             support_to_nb = max(0.0, min(cfg.contribution_max,
                 need_contribution - r_nb - cfg.repression_weight * G.graph["repression"]
@@ -171,6 +177,12 @@ def timestep_update(G, cfg: ModelConfig):
     for n in nodes:
         if support_givers[n] > 0:
             support_received[n] /= support_givers[n]
+
+
+    for n in nodes: #and same thing for given (mainly for plotting later)
+        neighbors = list(G.neighbors(n))
+        if neighbors:
+            support_given[n] /= len(neighbors)
 
     mean_iss = np.mean(list(support_received.values()))
     G.graph["internal_social_support"] = mean_iss
@@ -319,7 +331,7 @@ def run_all(adj_matrix, nodes_df, cfg):
     keys = ["group_resilience", "mean_individual_resilience", "internal_social_support",
             "causes_of_burnout", "mean_external_social_support", "repression"]
     results = {k: [] for k in keys}
-    final_resilience_distributions = []
+    final_node_data = []
     network_stats = []  # collect per-run final network stats
 
     for run in range(cfg.num_runs):
@@ -345,10 +357,20 @@ def run_all(adj_matrix, nodes_df, cfg):
             results[k].append(arr)
 
         nodes_left = list(G.nodes())
-        final_resilience_distributions.append(
-            np.array([G.nodes[n]["individual_resilience"] for n in nodes_left])
-            if nodes_left else np.array([np.nan])
-        )
+
+        # Store final individual-level values for every surviving node
+        for n in nodes_left:
+            support_received = history["cumulative_support_received"].get(n, 0.0)
+            support_given = history["cumulative_support_given"].get(n, 0.0)
+
+            final_node_data.append({
+                "run": run,
+                "node": n,
+                "individual_resilience": G.nodes[n]["individual_resilience"],
+                "external_social_support": G.nodes[n]["social_support"],
+                "internal_support_received": support_received,
+                "internal_support_given": support_given,
+            })
 
         # capture final network state of this run
         if len(nodes_left) > 1:
@@ -369,12 +391,15 @@ def run_all(adj_matrix, nodes_df, cfg):
                 "max_degree": np.nan, "density": np.nan, "avg_clustering": np.nan,
             })
 
-    return {k: np.array(v) for k, v in results.items()}, final_resilience_distributions, network_stats
+    return {k: np.array(v) for k, v in results.items()}, final_node_data, network_stats
 
-results, final_resilience_distributions, network_stats = run_all(adj_matrix, nodes_df, cfg)
-
+results, final_node_data, network_stats = run_all(
+    adj_matrix, nodes_df, cfg
+)
+# %% 
+# VISUALISATIONS
 # %%
-# visualisations
+# old visualisations (shows volatility)
 plt.figure(figsize=(10, 6))
 alpha_val = 0.07
 plt.plot(results["group_resilience"].T,            alpha=alpha_val, color="tab:blue")
@@ -388,7 +413,7 @@ plt.xlabel("Time")
 plt.ylabel("Value")
 plt.title("Model Volatility Across 100 Runs")
 plt.tight_layout()
-plt.show()
+#plt.show()
 
 # %%
 plt.figure(figsize=(10, 6))
@@ -412,9 +437,9 @@ for key, color in plot_vars:
 plt.ylim(-1, 1)
 plt.xlabel("Time")
 plt.ylabel("Value")
-plt.title("Social Support Norm With Much Longer Repression")
+plt.title("Empirical Case + Recovery")
 plt.tight_layout()
-plt.show()
+#plt.show()
 
 # %%
 # summary table
@@ -452,65 +477,99 @@ handles = [plt.Line2D([0], [0], color=color, linewidth=2, label=label)
 
 ax.legend(handles=handles, loc="center", frameon=False, fontsize=10)
 plt.tight_layout()
-plt.show()
+#plt.show()
 
 # comparing network variables to initial network
 stats_df = pd.DataFrame(network_stats)
 print(stats_df.agg(["mean", "min", "max", "std"]).round(3).to_string())
 
 # %%
-# resilience distributions
-def plot_individual_resilience_distributions(final_resilience_distributions: list[np.ndarray]):
-    from scipy.stats import gaussian_kde
+# resilience distributions social support scatter
+# final individual resilience vs external social support
+final_df = pd.DataFrame(final_node_data)
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+denominator = (
+    final_df["internal_support_given"]
+    + final_df["internal_support_received"]
+)
 
-    for i, run_values in enumerate(final_resilience_distributions):
-        if len(run_values) < 2:
-            continue  # skip if too few agents survived
-        kde = gaussian_kde(run_values)
-        x = np.linspace(-1, 1, 300)
-        ax.plot(x, kde(x), color="steelblue", alpha=0.15, linewidth=0.8)
+final_df["support_balance"] = np.where(
+    denominator > 0,
+    (
+        final_df["internal_support_given"]
+        - final_df["internal_support_received"]
+    ) / denominator,
+    0.0
+)
 
-    # overlay the pooled distribution across all runs
-    all_values = np.concatenate(final_resilience_distributions)
-    kde_pooled = gaussian_kde(all_values)
-    x = np.linspace(-1, 1, 300)
-    ax.plot(x, kde_pooled(x), color="red", linewidth=2, label=f"pooled (n={len(all_values)})")
+plt.figure(figsize=(9, 6))
 
-    ax.set_xlabel("individual resilience")
-    ax.set_ylabel("density")
-    ax.set_title("Distribution of individual resilience at t=200 across 100 runs")
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
+scatter = plt.scatter(
+    final_df["external_social_support"],
+    final_df["individual_resilience"],
+    c=final_df["support_balance"],
+    cmap="RdYlGn_r",
+    vmin=-1,
+    vmax=1,
+    alpha=0.35,
+    s=20
+)
 
-plot_individual_resilience_distributions(final_resilience_distributions)
+plt.xlabel("External Social Support")
+plt.ylabel("Individual Resilience at End")
+plt.title(
+    "Individual Resilience vs External Social Support\n"
+    "Coloured by Internal Social Support"
+)
+
+cbar = plt.colorbar(scatter)
+cbar.set_label("Internal Support Balance")
+
+plt.tight_layout()
+#plt.show()
+out = Path(__file__).parent / "empirical_shortrep_support_distro.png"
+#plt.savefig(out, dpi=150, bbox_inches="tight")
+
+
+
 # %%
-def plot_support_distributions(final_support_received, final_support_given):
-    from scipy.stats import gaussian_kde
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+from scipy.stats import pearsonr, spearmanr
 
-    for data, ax, title in [
-        (final_support_received, axes[0], "Cumulative support received"),
-        (final_support_given,    axes[1], "Cumulative support given"),
-    ]:
-        all_values = np.concatenate(data)
-        x = np.linspace(all_values.min(), all_values.max(), 300)
+# drop rows where a run fully dissolved (individual_resilience == NaN placeholder)
+clean_df = final_df.dropna(subset=["individual_resilience", "external_social_support",
+                                    "internal_support_given", "internal_support_received"])
 
-        for run_values in data:
-            if len(run_values) < 2:
-                continue
-            kde = gaussian_kde(run_values)
-            ax.plot(x, kde(x), color="steelblue", alpha=0.15, linewidth=0.8)
+# ---- 1. individual resilience vs internal social support (received) ----
+r_int, p_int = pearsonr(clean_df["individual_resilience"], clean_df["internal_support_received"])
+rho_int, ps_int = spearmanr(clean_df["individual_resilience"], clean_df["internal_support_received"])
+print(f"Resilience vs internal social support (received):")
+print(f"  Pearson  r = {r_int:.3f} (p = {p_int:.3g})")
+print(f"  Spearman ρ = {rho_int:.3f} (p = {ps_int:.3g})")
 
-        kde_pooled = gaussian_kde(all_values)
-        ax.plot(x, kde_pooled(x), color="red", linewidth=2,
-                label=f"pooled (n={len(all_values)})")
-        ax.set_title(title)
-        ax.set_xlabel("cumulative support")
-        ax.set_ylabel("density")
-        ax.legend()
+# ---- 2. individual resilience vs external social support ----
+r_ext, p_ext = pearsonr(clean_df["individual_resilience"], clean_df["external_social_support"])
+rho_ext, ps_ext = spearmanr(clean_df["individual_resilience"], clean_df["external_social_support"])
+print(f"\nResilience vs external social support:")
+print(f"  Pearson  r = {r_ext:.3f} (p = {p_ext:.3g})")
+print(f"  Spearman ρ = {rho_ext:.3f} (p = {ps_ext:.3g})")
 
-    plt.tight_layout()
-    plt.show()
+# ---- 3. group by external_social_support level ----
+grouped = clean_df.groupby("external_social_support").agg(
+    mean_resilience=("individual_resilience", "mean"),
+    mean_support_given=("internal_support_given", "mean"),
+    mean_support_received=("internal_support_received", "mean"),
+    n=("individual_resilience", "size"),
+).reset_index()
+
+print("\nGrouped by external social support level:")
+print(grouped.round(3))
+
+r_level_res, p_level_res = pearsonr(grouped["external_social_support"], grouped["mean_resilience"])
+r_level_given, p_level_given = pearsonr(grouped["external_social_support"], grouped["mean_support_given"])
+r_level_recv, p_level_recv = pearsonr(grouped["external_social_support"], grouped["mean_support_received"])
+
+print(f"\nExternal support level vs mean resilience:      r = {r_level_res:.3f} (p = {p_level_res:.3g})")
+print(f"External support level vs mean support given:    r = {r_level_given:.3f} (p = {p_level_given:.3g})")
+print(f"External support level vs mean support received: r = {r_level_recv:.3f} (p = {p_level_recv:.3g})")
+
+# %%

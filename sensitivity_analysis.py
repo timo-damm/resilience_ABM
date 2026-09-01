@@ -7,144 +7,36 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from scipy.integrate import solve_ivp
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 # %%
-# phase state visualisation based on equations
+"""
+OFAT Sensitivity Analysis – Positive Fixed Point (resilience ≈ +1)
+===================================================================
+Imports resilience_ABM.py from the same directory and probes how
+easily the model is displaced from its positive boundary fixed point
+by perturbing the INITIAL VALUES of two state variables:
 
-def sat(x):
-    return 1 - x**2
+  • group_resilience      (graph-level, swept across [−1, +1])
+  • causes_of_burnout     (graph-level, swept across [0, 1])
 
-# --------------------------------------------------
-# ODE system
-# --------------------------------------------------
+And by sweeping REPRESSION SCHEDULE parameters:
 
-def rhs(t, y, rho):
-    rhat, R, B = y
+  • rep_low   swept from 0.0 to 0.5 (step 0.1)
+  • rep_high  swept from 0.5 to 1.0 (step 0.1)
 
-    drhat = (
-        sat(rhat)
-        * 0.015
-        * (-rho + 0.6 + 0.39 - rhat + R - B)
-    )
-
-    dR = (
-        sat(R)
-        * 0.015
-        * (-rho + 0.39)
-    )
-
-    dB = (
-        sat(B)
-        * 0.015
-        * (-rhat - R)
-    )
-
-    return [drhat, dR, dB]
-
-
-# --------------------------------------------------
-# Parameters
-# --------------------------------------------------
-
-tspan = (0, 600)
-t = np.linspace(*tspan, 400)
-
-rho_values = np.linspace(0, 1, 50)
-
-rng = np.random.default_rng(2)
-
-initial_conditions = np.column_stack([
-    rng.uniform(-0.1, 0.1, 10),   # rhat
-    rng.uniform(-0, 0, 10),   # R
-    rng.uniform(0, 1, 10)     # B
-])
-
-# --------------------------------------------------
-# Plot
-# --------------------------------------------------
-
-fig = plt.figure(figsize=(11,9))
-ax = fig.add_subplot(111, projection="3d")
-
-cmap = plt.cm.coolwarm
-norm = plt.Normalize(-1,1)
-
-for rho in rho_values:
-
-    for y0 in initial_conditions:
-
-        sol = solve_ivp(
-            rhs,
-            tspan,
-            y0,
-            args=(rho,),
-            t_eval=t,
-            rtol=1e-8,
-            atol=1e-8,
-        )
-
-        rhat = sol.y[0]
-        R = sol.y[1]
-        B = sol.y[2]
-
-        rho_line = np.full_like(B, rho)
-
-        # x = B, y = rho, z = rhat
-        points = np.array([B, rho_line, rhat]).T.reshape(-1,1,3)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-
-        lc = Line3DCollection(
-            segments,
-            cmap=cmap,
-            norm=norm,
-            linewidth=2
-        )
-
-        lc.set_array(R[:-1])
-
-        ax.add_collection3d(lc)
-
-        # Direction arrow every ~80 steps
-        step = 80
-        for i in range(step, len(B)-1, step):
-
-            dB = B[i+1] - B[i]
-            dr = rhat[i+1] - rhat[i]
-
-            ax.quiver(
-                B[i],      # x
-                rho,       # y
-                rhat[i],   # z
-                dB,        # dx
-                0,         # dy (rho is fixed)
-                dr,        # dz
-                length=0.05,
-                normalize=True,
-                color='k',
-                arrow_length_ratio=0.4
-            )
-
-# Axis limits
-ax.set_xlim(0,1)
-ax.set_ylim(0,1)
-ax.set_zlim(-1,1)
-
-ax.set_xlabel(r"$B$", fontsize=14)
-ax.set_ylabel(r"$\rho$", fontsize=14)
-ax.set_zlabel(r"$\hat r$", fontsize=14)
-
-mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-mappable.set_array([])
-cbar = plt.colorbar(mappable, ax=ax, pad=0.1)
-cbar.set_label(r"$R$", fontsize=14)
-
-plt.tight_layout()
-plt.show()
-
+For the repression sweeps individual resilience is clamped at +1
+and all other state/config values are held at their defaults.
+100 replicates × 100 timesteps per condition.
+"""
 # %%
-# importing ABM to run it
+import importlib.util
+import sys
+from pathlib import Path
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+# ── locate & import the ABM ──────────────────────────────────────────────────
 ABM_PATH = Path(__file__).parent / "resilience_ABM.py"
 
 spec = importlib.util.spec_from_file_location("resilience_ABM", ABM_PATH)
@@ -156,22 +48,33 @@ adj_matrix  = abm.adj_matrix
 nodes_df    = abm.nodes_df
 ModelConfig = abm.ModelConfig
 
-# config for sweeping
-FP_VAL      = +1.0
-DEFAULT_RES = 0.2  
-DEFAULT_COB = 0.2   
+# ── forward-compatible log_state wrapper ─────────────────────────────────────
+# log_state() gained extra required args (e.g. support_given, support_received).
+# This wrapper inspects the live signature and passes 0 for any extras so the
+# sensitivity script never needs updating when the ABM signature changes.
+import inspect as _inspect
+_log_sig    = _inspect.signature(abm.log_state)
+_log_extras = [
+    p for p in list(_log_sig.parameters)[3:]  # skip G, t, history
+    if _log_sig.parameters[p].default is _inspect.Parameter.empty
+]
+def _call_log_state(G, t, history):
+    abm.log_state(G, t, history, *([{}] * len(_log_extras)))
 
-NUM_RUNS = 100
-T        = 100
+# ── defaults & sweep config ───────────────────────────────────────────────────
+FP_VAL      = +0.99
+DEFAULT_RES = 0.2   # default initial group resilience
+DEFAULT_COB = 0.2   # default initial causes of burnout
 
-sweep_res_group = np.round(np.arange(-1.0, 1.0 + 0.1, 0.1), 5)
-sweep_cob       = np.round(np.arange( 0.0, 1.0 + 0.1, 0.1), 5)
-sweep_rep_low   = np.round(np.arange( 0.0, 0.5 + 0.1, 0.1), 5)
-sweep_rep_high  = np.round(np.arange( 0.5, 1.0 + 0.1, 0.1), 5)
+NUM_RUNS = 50
+T        = 200
 
-# OFAT SENSITIVITY ANALYSIS
-# %%
-# resilience and COB OFAT parameter sweeping function
+sweep_res_group = np.round(np.linspace(-1.0, 1.0, 6), 5)
+sweep_cob       = np.round(np.linspace( 0.0, 1.0, 6), 5)
+sweep_rep_low   = np.round(np.linspace( 0.0, 0.5, 6), 5)
+sweep_rep_high  = np.round(np.linspace( 0.5, 1.0, 6), 5)
+
+# ── core runner – initial-state sweep ────────────────────────────────────────
 def run_clamped(adj_matrix, nodes_df, cfg,
                 init_res_group: float,
                 init_cob: float,
@@ -193,7 +96,7 @@ def run_clamped(adj_matrix, nodes_df, cfg,
         for t in range(T):
             G.graph["repression"] = abm.repression_schedule(t, cfg)
             abm.timestep_update(G, cfg)
-            abm.log_state(G, t, history)
+            _call_log_state(G, t, history)
 
         for k in keys:
             results[k].append(history[k])
@@ -201,10 +104,12 @@ def run_clamped(adj_matrix, nodes_df, cfg,
     return {k: np.array(v) for k, v in results.items()}
 
 
-# repression OFAT parameter sweeping function
+# ── core runner – repression parameter sweep ─────────────────────────────────
 def run_repression(adj_matrix, nodes_df, cfg,
                    num_runs: int = NUM_RUNS,
                    T: int = T) -> dict:
+    """Run with individual resilience clamped at +1 and default initial state,
+    using whatever rep_low / rep_high is already set on cfg."""
     keys = ["group_resilience", "mean_individual_resilience",
             "internal_social_support", "causes_of_burnout",
             "mean_external_social_support", "repression"]
@@ -214,12 +119,13 @@ def run_repression(adj_matrix, nodes_df, cfg,
         G = abm.build_graph(adj_matrix, nodes_df, cfg)
         for n in G.nodes():
             G.nodes[n]["individual_resilience"] = FP_VAL
+        # group_resilience and causes_of_burnout stay at build_graph defaults
 
         history = abm.empty_history()
         for t in range(T):
             G.graph["repression"] = abm.repression_schedule(t, cfg)
             abm.timestep_update(G, cfg)
-            abm.log_state(G, t, history)
+            _call_log_state(G, t, history)
 
         for k in keys:
             results[k].append(history[k])
@@ -231,7 +137,7 @@ def mean_std(results: dict, key: str = "mean_individual_resilience"):
     arr = results[key]
     return arr.mean(axis=0), arr.std(axis=0)
 
-# OFAT for group resilience and causes of burnout
+# ── run OFAT – initial state ──────────────────────────────────────────────────
 cfg = ModelConfig()
 results_store: dict = {}
 
@@ -258,7 +164,7 @@ for param, values in state_params.items():
             init_cob=init_cob,
         )
 
-# OFAT for repression (sweeping low values and high values, not changing time)
+# ── run OFAT – repression schedule ───────────────────────────────────────────
 rep_results: dict = {
     "rep_low":  {},
     "rep_high": {},
@@ -283,7 +189,7 @@ for val in sweep_rep_high:
     rep_results["rep_high"][float(val)] = run_repression(
         adj_matrix, nodes_df, cfg_rep)
 
-# saving all outputs to a CSV
+# ── summary CSV ───────────────────────────────────────────────────────────────
 rows = []
 
 # initial-state rows
@@ -324,69 +230,57 @@ for rep_param, val_dict in rep_results.items():
         })
 
 df = pd.DataFrame(rows)
-df.to_csv(Path(__file__).parent / "ofat_summary.csv", index=False)
+df.to_csv(Path(__file__).parent / "ofat_summary_new.csv", index=False)
 
-# VISUALISATIONS
 # %%
-#plot config
+# ── plot config ───────────────────────────────────────────────────────────────
 PARAM_LABELS = {
-    "group_resilience":  "Initial Group Resilience",
+    "group_resilience":  "Initial SMO Resilience",
     "causes_of_burnout": "Initial Causes of Burnout",
-    "rep_low":           "Stressors Low",
-    "rep_high":          "Stressors High",
+    "rep_low":           "Repression Low (rep_low)",
+    "rep_high":          "Repression High (rep_high)",
 }
 COLOR = "steelblue"
 
-# resilience and cob OFAT
+# ── Figure 1 (per parameter): time-series grid – initial state ───────────────
 for param, val_dict in results_store.items():
-    vals = sorted(val_dict.keys())
+    vals   = sorted(val_dict.keys())
     n_vals = len(vals)
 
-    n_cols = min(5, n_vals)
-    n_rows = int(np.ceil(n_vals / 5)) #only to make it readable in article
-
     fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(3 * n_cols, 4 * n_rows),
+        1, n_vals,
+        figsize=(3 * n_vals, 4),
         sharey=True, sharex=True,
     )
+    axes = np.atleast_1d(axes)
 
-    axes = np.atleast_1d(axes).reshape(n_rows, n_cols)
-
-    for idx, val in enumerate(vals):
-        row = idx // 5
-        col = idx % 5
-        ax = axes[row, col]
-
+    for col_j, val in enumerate(vals):
+        ax = axes[col_j]
         m_t, s_t = mean_std(val_dict[val], "mean_individual_resilience")
         t = np.arange(T)
 
         ax.fill_between(t, m_t - s_t, m_t + s_t, alpha=0.2, color=COLOR)
         ax.plot(t, m_t, color=COLOR, lw=1.5)
-        ax.axhline(FP_VAL, color="grey", lw=0.8, ls="--", label="FP (+1)")
-        ax.axhline(0, color="black", lw=0.4, ls=":")
+        ax.axhline(FP_VAL, color="grey",  lw=0.8, ls="--", label="FP (+1)")
+        ax.axhline(0,      color="black", lw=0.4, ls=":")
         ax.set_ylim(-1.05, 1.05)
         ax.set_title(f"init = {val:+.2f}", fontsize=9)
         ax.set_xlabel("Time", fontsize=8)
 
-        if col == 0:
+        if col_j == 0:
             ax.set_ylabel("Mean individual resilience", fontsize=8)
-
-    for idx in range(n_vals, n_rows * n_cols):
-        fig.delaxes(axes.flatten()[idx])
 
     fig.suptitle(
         f"OFAT – {PARAM_LABELS[param]} (FP = +1)\n"
         f"(mean ± 1 SD, {NUM_RUNS} runs)",
         fontsize=11, y=1.01,
     )
-
     plt.tight_layout()
     out = Path(__file__).parent / f"ofat_{param}_timeseries.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-# repression OFAT
+# ── Figure 2 (per repression param): time-series grid ────────────────────────
 for rep_param, val_dict in rep_results.items():
     vals   = sorted(val_dict.keys())
     n_vals = len(vals)
@@ -428,7 +322,7 @@ for rep_param, val_dict in rep_results.items():
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-# displacement summary for all parameters
+# ── Figure 3: displacement summary – all four parameters ─────────────────────
 all_params = list(results_store.items()) + [
     (rp, val_dict) for rp, val_dict in rep_results.items()
 ]
@@ -469,44 +363,57 @@ out = Path(__file__).parent / "ofat_displacement_summary.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 
-# GLOBAL SENSITIVITY ANALYSIS (OLS) 
-# %% 
-GSA_N = 10000 # number of runs in the sample 
+# %%
+# =============================================================================
+# GLOBAL SENSITIVITY ANALYSIS – OLS regression over 10 000 random samples
+# =============================================================================
+# Each run draws one sample from the joint parameter space:
+#   init_indiv_res  ~ Uniform(−1,  +1)
+#   init_group_res  ~ Uniform(−1,  +1)
+#   init_cob        ~ Uniform( 0,   1)
+#   rep_low         ~ Uniform( 0, 0.5)
+#   rep_high        ~ Uniform(0.5,  1)
+#
+# The outcome is mean_individual_resilience at t = 100 from a single
+# stochastic run.  OLS (with standardised inputs) yields standardised
+# coefficients that are directly comparable across parameters.
+# =============================================================================
+
+import statsmodels.api as sm
+from scipy import stats as scipy_stats
+
+GSA_N = 10_000
+GSA_T = 100
 rng   = np.random.default_rng(seed=42)
- 
-# Latin Hypercube sampling (better for near-random draws from multi-dimensional distribution)
+
+# ── Latin-hypercube-style uniform sampling ────────────────────────────────────
 gsa_init_indiv = rng.uniform(-1.0,  1.0, GSA_N)
 gsa_init_group = rng.uniform(-1.0,  1.0, GSA_N)
 gsa_init_cob   = rng.uniform( 0.0,  1.0, GSA_N)
 gsa_rep_low    = rng.uniform( 0.0,  0.5, GSA_N)
 gsa_rep_high   = rng.uniform( 0.5,  1.0, GSA_N)
- 
-gsa_init_indiv = rng.uniform(-1.0,  1.0, GSA_N)
-gsa_init_group = rng.uniform(-1.0,  1.0, GSA_N)
-gsa_init_cob   = rng.uniform( 0.0,  1.0, GSA_N)
-gsa_rep_low    = rng.uniform( 0.0,  0.5, GSA_N)
-gsa_rep_high   = rng.uniform( 0.5,  1.0, GSA_N)
- 
+
 gsa_outcomes = np.empty(GSA_N)
-  
+
+print(f"\nRunning {GSA_N} global sensitivity runs …")
 for i in range(GSA_N):
     if (i + 1) % 1000 == 0:
         print(f"  {i + 1}/{GSA_N}")
- 
+
     cfg_gsa          = ModelConfig()
     cfg_gsa.rep_low  = float(gsa_rep_low[i])
     cfg_gsa.rep_high = float(gsa_rep_high[i])
- 
+
     G = abm.build_graph(adj_matrix, nodes_df, cfg_gsa)
     for n in G.nodes():
         G.nodes[n]["individual_resilience"] = float(gsa_init_indiv[i])
     G.graph["group_resilience"]  = float(gsa_init_group[i])
     G.graph["causes_of_burnout"] = float(gsa_init_cob[i])
- 
-    for t in range(T):
+
+    for t in range(GSA_T):
         G.graph["repression"] = abm.repression_schedule(t, cfg_gsa)
         abm.timestep_update(G, cfg_gsa)
- 
+
     nodes_left = list(G.nodes())
     if nodes_left:
         gsa_outcomes[i] = np.mean(
@@ -514,8 +421,8 @@ for i in range(GSA_N):
         )
     else:
         gsa_outcomes[i] = np.nan   # group dissolved
- 
-# building design matrix and running ols regressiono
+
+# ── build design matrix and run OLS ──────────────────────────────────────────
 gsa_df = pd.DataFrame({
     "init_indiv_res": gsa_init_indiv,
     "init_group_res": gsa_init_group,
@@ -524,20 +431,22 @@ gsa_df = pd.DataFrame({
     "rep_high":       gsa_rep_high,
     "outcome":        gsa_outcomes,
 }).dropna()
- 
+
 FEATURE_COLS = ["init_indiv_res", "init_group_res", "init_cob",
                 "rep_low", "rep_high"]
- 
+
 # standardise inputs (zero mean, unit variance) so coefficients are comparable
 X_raw = gsa_df[FEATURE_COLS].values
 X_std = (X_raw - X_raw.mean(axis=0)) / X_raw.std(axis=0)
 y     = gsa_df["outcome"].values
- 
+
 X_with_const = sm.add_constant(X_std)
 ols_model    = sm.OLS(y, X_with_const).fit()
- 
+
+print("\n── OLS Results (standardised inputs) ──────────────────────────────")
 print(ols_model.summary())
- 
+
+# collect tidy results table
 ci      = np.asarray(ols_model.conf_int())   # shape (n_params, 2)
 ols_results = pd.DataFrame({
     "parameter":   ["intercept"] + FEATURE_COLS,
@@ -548,25 +457,24 @@ ols_results = pd.DataFrame({
     "ci_low":      ci[:, 0],
     "ci_high":     ci[:, 1],
 })
-print("R² =", round(ols_model.rsquared, 4),
-      "Adj-R² =", round(ols_model.rsquared_adj, 4))
+print("\nR² =", round(ols_model.rsquared, 4),
+      "  Adj-R² =", round(ols_model.rsquared_adj, 4))
 
-# %% 
-# standardised regression coefficients figure
+# ── Figure 4: standardised coefficients (feature importance) ─────────────────
 coef_df = ols_results[ols_results["parameter"] != "intercept"].copy()
- 
+
 FEATURE_LABELS = {
     "init_indiv_res": "Initial\nIndiv. Resilience",
     "init_group_res": "Initial\nGroup Resilience",
     "init_cob":       "Initial\nCauses of Burnout",
-    "rep_low":        "Stressors\nLow",
-    "rep_high":       "Stressors\nHigh",
+    "rep_low":        "Repression\nLow",
+    "rep_high":       "Repression\nHigh",
 }
 coef_df["label"] = coef_df["parameter"].map(FEATURE_LABELS)
- 
+
 bar_colors = ["tomato" if c < 0 else "steelblue"
               for c in coef_df["coefficient"]]
- 
+
 fig, ax = plt.subplots(figsize=(8, 4))
 bars = ax.bar(
     coef_df["label"], coef_df["coefficient"],
@@ -581,67 +489,71 @@ ax.errorbar(
 ax.axhline(0, color="black", lw=0.8)
 ax.set_ylabel("Standardised OLS coefficient", fontsize=10)
 ax.set_title(
-    f"Global Sensitivity Analysis – Effect on Mean Individual Resilience at T={T}\n"
+    f"Global Sensitivity Analysis – Effect on Mean Individual Resilience at T={GSA_T}\n"
     f"OLS on {len(gsa_df):,} runs  |  R² = {ols_model.rsquared:.3f}",
     fontsize=11,
 )
- 
+
+# annotate p-values above / below each bar
 for bar, (_, row) in zip(bars, coef_df.iterrows()):
     p = row["p_value"]
     sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
     y_pos = row["coefficient"] + 1.96 * row["std_err"]
     y_pos += 0.005 if y_pos >= 0 else -0.015
     ax.text(bar.get_x() + bar.get_width() / 2, y_pos,
-            sig, ha="center", va="bottom", fontsize=9) # p-values below each bar
- 
+            sig, ha="center", va="bottom", fontsize=9)
+
 plt.tight_layout()
 out = Path(__file__).parent / "gsa_ols_coefficients.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"\nSaved {out.name}")
- 
-# %% 
-#Partial regression plots
-partial_r2 = {}
 
+# ── Figure 5: partial regression plots ───────────────────────────────────────
 fig, axes = plt.subplots(1, len(FEATURE_COLS),
                          figsize=(4 * len(FEATURE_COLS), 4),
                          sharey=True)
- 
+
+partial_r2 = {}
+
 for ax, (col_i, feat) in zip(axes, enumerate(FEATURE_COLS)):
     # residualise y and the focal feature against all other features
-    others = [j for j in range(len(FEATURE_COLS)) if j != col_i]
+    others   = [j for j in range(len(FEATURE_COLS)) if j != col_i]
     X_others = sm.add_constant(X_std[:, others])
- 
-    res_y    = sm.OLS(y,              X_others).fit().resid
-    res_feat = sm.OLS(X_std[:, col_i], X_others).fit().resid
 
+    fit_y    = sm.OLS(y,               X_others).fit()
+    fit_feat = sm.OLS(X_std[:, col_i], X_others).fit()
+    res_y    = fit_y.resid
+    res_feat = fit_feat.resid
+
+    # partial R²: SSR reduction from adding this feature / SST of reduced model
+    # equivalently: corr(res_feat, res_y)²
     pr2 = np.corrcoef(res_feat, res_y)[0, 1] ** 2
     partial_r2[feat] = pr2
 
- 
     # bin into 40 quantile bins for a clean scatter
     order   = np.argsort(res_feat)
     bin_idx = np.array_split(order, 40)
     bx = [res_feat[b].mean() for b in bin_idx]
     by = [res_y[b].mean()    for b in bin_idx]
- 
+
     ax.scatter(bx, by, s=18, alpha=0.7, color="steelblue", edgecolors="none")
- 
+
     # overlay OLS line
     slope = np.polyfit(res_feat, res_y, 1)
     xline = np.linspace(res_feat.min(), res_feat.max(), 100)
     ax.plot(xline, np.polyval(slope, xline), color="tomato", lw=1.5)
- 
+
     ax.axhline(0, color="grey", lw=0.5, ls="--")
     ax.axvline(0, color="grey", lw=0.5, ls="--")
     ax.set_xlabel(FEATURE_LABELS[feat], fontsize=9)
     if col_i == 0:
         ax.set_ylabel("Residual outcome", fontsize=9)
-    ax.set_title(FEATURE_LABELS[feat], fontsize=9)
- 
+    ax.set_title(f"{FEATURE_LABELS[feat]}\npartial R² = {pr2:.4f}", fontsize=9)
+
 fig.suptitle(
-    "Partial Regression Plots – Global Sensitivity Analysis\n", #binned features, means each feature is paralleled out against the rest
+    "Partial Regression Plots – Global Sensitivity Analysis\n"
+    "(binned means, each feature partialled out against the rest)",
     fontsize=11,
 )
 plt.tight_layout()
@@ -650,10 +562,8 @@ fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Saved {out.name}")
 
-
-# %%
-#partial R squared
+# print partial R² summary
+print("\n── Partial R² per predictor ────────────────────────────────────────")
 for feat, pr2 in partial_r2.items():
     print(f"  {FEATURE_LABELS[feat].replace(chr(10), ' '):35s}  partial R² = {pr2:.4f}")
-
 # %%
