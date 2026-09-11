@@ -25,6 +25,7 @@ class ModelConfig:
     contribution_max = 1.0 #group norm for how much support is adequate at max (minimum defined in contributions function)
     external_support_weight: float = 0.015 # external social support effect weight (on resilience)
     internal_support_weight: float = 0.015 # internal social support effect weight (on resilience)
+    support_cost: float = 0.01 # weight of how much social support decreases resilience
 
     #resilience
     #initiation function for resilience distribution here
@@ -41,7 +42,7 @@ class ModelConfig:
 
     #network dynamics
     dropout_weight: float = 0.02 # individual resilience multiplied with this weight gives dropout probability
-    support_threshold: float = -0.6 # individual resilience threshold for supporting others
+    max_support_capacity: float = 1 #maximum support agents can give at perfect resilience
     edge_base_prob: float = 0.001 #base probability of forming an edge
     edge_resilience_weight: float = 0.01 # resilience effect weight on edge formation probability
     base_rate: float = 0.25 # base rate of agents joining
@@ -52,7 +53,7 @@ class ModelConfig:
     rep_low: float = 0.2 # minimum value of repression
     rep_high: float = 0.8 # maximum value of repression
     t_low: int = 14 # time of low repression
-    t_transition: int = 3 # time of repression increase
+    t_transition: int = 2 # time of repression increase
     t_repend: int = 70 # time of repression decresase (purely empirical: 70)
 
     # simulation
@@ -152,41 +153,33 @@ def timestep_update(G, cfg: ModelConfig):
     for n in nodes:
         r_n = G.nodes[n]["individual_resilience"]
         neighbors = list(G.neighbors(n))
-        if not neighbors or r_n < cfg.support_threshold:
-            continue
-        
-        #use this need contribution for empirical variant
-        need_contribution = max(0.0, min(cfg.contribution_max,
-            cfg.tau - G.nodes[n]["social_support"]
-        ))
 
-        for nb in neighbors:
-            #use this need contribution for mutual support variant
-            #need_contribution = max(0.0, min(cfg.contribution_max,
-            #    cfg.tau - G.nodes[nb]["social_support"]
-            #))    
-            r_nb = G.nodes[nb]["individual_resilience"]
-            support_to_nb = max(0.0, min(cfg.contribution_max,
-                need_contribution - r_nb - cfg.repression_weight * G.graph["repression"]
-            ))
+        # dynamic capacity: 0 at r_n = -1, max_support_capacity at r_n = 1
+        capacity = cfg.max_support_capacity * (r_n + 1) / 2
+
+        if not neighbors or capacity <= 0:
+            continue
+
+        
+         # each neighbour's need (how far below their support target they sit)
+        needs = {
+            nb: max(0.0, cfg.tau - G.nodes[nb]["social_support"])
+            for nb in neighbors
+        }
+        total_need = sum(needs.values())
+
+        if total_need <= 0:
+            continue  # nobody around n needs support right now
+
+        for nb, need_nb in needs.items():
+            support_to_nb = capacity * (need_nb / total_need)
+            support_to_nb = max(0.0, support_to_nb - cfg.repression_weight * G.graph["repression"])
+
             support_received[nb] += support_to_nb
             support_given[n] += support_to_nb
-            support_givers[nb] += 1
-
-    # normalise by number of givers so degree doesn't inflate received support
-    for n in nodes:
-        if support_givers[n] > 0:
-            support_received[n] /= support_givers[n]
-
-
-    for n in nodes: #and same thing for given (mainly for plotting later)
-        neighbors = list(G.neighbors(n))
-        if neighbors:
-            support_given[n] /= len(neighbors)
 
     mean_iss = np.mean(list(support_received.values()))
     G.graph["internal_social_support"] = mean_iss
-
 
     # causes of burnout
     G.graph["causes_of_burnout"] = max(0.0,
@@ -207,6 +200,7 @@ def timestep_update(G, cfg: ModelConfig):
             + cfg.meso_micro_weight              * g_old
             - cfg.causes_burnout_weight          * causes_burnout
             - cfg.repression_weight              * G.graph["repression"]
+            - cfg.support_cost                   * support_given[n]
         )
         new_resilience[n] = r_new
 
@@ -259,7 +253,7 @@ def timestep_update(G, cfg: ModelConfig):
     for n in list(G.nodes()):
         r_n = G.nodes[n]["individual_resilience"]
         neighbors = set(G.neighbors(n))
-        deletion_prob = max(0.0, cfg.support_threshold - r_n)
+        deletion_prob = max(0.0, -0.6 - r_n) # specify this in model config
         addition_prob = max(0.0, cfg.edge_resilience_weight * r_n + cfg.edge_base_prob)
 
         for neighbor in list(neighbors):
