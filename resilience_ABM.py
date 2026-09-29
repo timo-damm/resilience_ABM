@@ -58,8 +58,8 @@ class ModelConfig:
     t_repend: int = 70 # time of repression decresase (purely empirical: 70)
 
     # simulation
-    T: int = 70
-    num_runs: int = 20
+    T: int = 200
+    num_runs: int = 100
 
 cfg = ModelConfig()
 
@@ -161,9 +161,9 @@ def timestep_update(G, cfg: ModelConfig):
             continue
 
         
-         # each neighbour's need 
+         # each neighbour's need  
         needs = {
-            nb: max(0.0, cfg.tau - G.nodes[n]["social_support"]) #change between nb and n here to adjust between the two variants
+            nb: max(0.0, cfg.tau - G.nodes[n]["social_support"] - G.nodes[nb]["individual_resilience"]) #change between nb and n here to adjust between the two variants
             for nb in neighbors
         }
         total_need = sum(needs.values())
