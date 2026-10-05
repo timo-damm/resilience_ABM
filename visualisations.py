@@ -2,7 +2,6 @@
 import importlib.util
 import sys
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
@@ -35,27 +34,31 @@ def sat(x):
     return 1 - x**2
 
 
-
+#%%
 # ---------------------------------------------------------------------
 # ODE system, now forced by the real (time-varying) repression schedule
 # instead of a fixed rho
 # ---------------------------------------------------------------------
-def rhs(t, y, cfg):
+def iss_hat_fn(rhat, rho, cfg, k_mean, ess_hat, alpha=0.015, eps=0.0):
+    rhat = np.asarray(rhat, dtype=float)
+    need = cfg.tau - ess_hat - rhat
+    gate = (need > 0).astype(float) if eps == 0 else 1 / (1 + np.exp(-need / eps))
+    capacity = cfg.max_support_capacity * (rhat + 1) / 2
+    return gate * np.maximum(0.0, capacity - k_mean * alpha * rho)
+
+
+def rhs(t, y, cfg, k_mean, ess_hat, eps=0.01):
     rhat, R, B = y
-    rho = repression_schedule(t, cfg)
+    rho, alpha, c = repression_schedule(t, cfg), 0.015, cfg.support_cost
+    iss = float(iss_hat_fn(rhat, rho, cfg, k_mean, ess_hat, alpha, eps))
 
-    rhat_term = max(0.39 - rhat, 0.0)  # lower bound of iss (a norm)
-
-    drhat = sat(rhat) * 0.015 * (-rho + 0.6 + rhat_term + R - B)
-    dR = sat(R) * 0.015 * (-rho + 0.39)
-    dB = sat(B) * 0.015 * (-rhat - R)
-
+    drhat = sat(rhat) * alpha * (-rho + ess_hat + iss + R - B) - c * iss
+    dR    = sat(R)    * alpha * (-rho + iss + rhat)
+    dB    = sat(B)    * alpha * (-rhat - R)
     if B <= 0 and dB < 0:
         dB = 0.0
-
     return [drhat, dR, dB]
-
-
+#%%
 # ---------------------------------------------------------------------
 # single real ABM run, mirroring run_all() but for one realization only
 # ---------------------------------------------------------------------
@@ -71,12 +74,13 @@ def run_single_abm(adj_matrix, nodes_df, cfg):
         log_state(G, t, history, support_received, support_given)
     return history
 
-
+#%%
 # ---------------------------------------------------------------------
 # time window: match the ABM's discrete steps exactly
 # ---------------------------------------------------------------------
 tspan = (0, cfg.T - 1)
 t_eval = np.arange(cfg.T)
+
 
 # ---------------------------------------------------------------------
 # background streamlines: grid of ODE trajectories under the real
@@ -99,50 +103,67 @@ initial_conditions = np.column_stack([
 fig, ax = plt.subplots(figsize=(9, 7))
 
 cmap = "viridis"
-norm = plt.Normalize(0, 0.39 + 0.61)
+
+ess_hat = nodes_df["SOC_SUP"].mean()/10
+k_mean = 8.0
 
 for y0 in initial_conditions:
     sol = solve_ivp(
-        rhs, tspan, y0, args=(cfg,), t_eval=t_eval, rtol=1e-8, atol=1e-8
+        rhs, tspan, y0,
+        args=(cfg, k_mean, ess_hat),
+        t_eval=t_eval, rtol=1e-8, atol=1e-8,
+        max_step=1.0,
     )
 
     rhat = sol.y[0]
     B = sol.y[2]
 
-    baseline = np.clip(0.39 - rhat, 0.3, 1)
-    suppress_start, suppress_end = -0.4, -0.8
-    depth = np.clip((suppress_start - rhat) / (suppress_start - suppress_end), 0, 1)
-    suppression = (1 - depth) ** 2
-    iss_hat = baseline * suppression
+    rho_t = np.array([repression_schedule(t, cfg) for t in sol.t])
+    iss_hat = iss_hat_fn(rhat, rho_t, cfg, k_mean, ess_hat, eps=0.01)
 
     points = np.array([B, rhat]).T.reshape(-1, 1, 2)
     segments = np.concatenate([points[:-1], points[1:]], axis=1)
 
-    lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=2, alpha=0.8)
+    color_norm = plt.Normalize(0, 1)
+
+    lc = LineCollection(segments, cmap=cmap, norm=color_norm, linewidth=2, alpha=0.8)
     lc.set_array(iss_hat[:-1])
     ax.add_collection(lc)
 
-    step = 10
-    min_move = 0.02
-    for i in range(step, len(B) - 1, step):
-        dB = B[i + 1] - B[i]
-        dr = rhat[i + 1] - rhat[i]
+    step = 20      
+    span = 3        
+    min_move = 0.04
+
+    for i in range(step, len(B) - span, step):
+        dB = B[i + span] - B[i]
+        dr = rhat[i + span] - rhat[i]
         if np.hypot(dB, dr) < min_move:
             continue
         ax.annotate(
             "",
-            xy=(B[i] + dB, rhat[i] + dr),
+            xy=(B[i + span], rhat[i + span]),
             xytext=(B[i], rhat[i]),
             arrowprops={
                 "arrowstyle": "->",
                 "color": "k",
                 "lw": 1,
                 "mutation_scale": 12,
-                "alpha": 0.8,
+                "alpha": 0.7,
+                "shrinkA": 0,
+                "shrinkB": 0,
             },
+
         )
 
     ax.plot(B[0], rhat[0], "o", color="k", markersize=2, alpha=0.6)
+
+
+#ax.set_xlabel("Causes of Burnout", fontsize=14)
+#ax.set_ylabel("Resilience", fontsize=14)
+#ax.set_title(r"Phase trajectories at $\rho = 0.2$", fontsize=14)
+
+#out = Path(__file__).parent / "phase_2D_replow.png"
+#fig.savefig(out, dpi=150, bbox_inches="tight")
 
 ax.add_patch(
     Rectangle(
@@ -167,7 +188,7 @@ R_emp = np.array(history["group_resilience"])
 points = np.array([B_emp, rhat_emp]).T.reshape(-1, 1, 2)
 segments = np.concatenate([points[:-1], points[1:]], axis=1)
 lc = LineCollection(
-    segments, cmap=cmap, norm=norm, linewidth=4, alpha=1.0, zorder=10
+    segments, cmap=cmap, norm=color_norm, linewidth=4, alpha=1.0, zorder=10
 )
 lc.set_array(iss_emp[:-1])
 ax.add_collection(lc)
@@ -179,7 +200,7 @@ ax.set_xlabel("Causes of Burnout", fontsize=14)
 ax.set_ylabel("Resilience", fontsize=14)
 ax.set_title("Empirical Variant, 55 Weeks of High Repression", fontsize=14)
 
-mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+mappable = plt.cm.ScalarMappable(cmap=cmap, norm=color_norm)
 mappable.set_array([])
 cbar = plt.colorbar(mappable, ax=ax)
 cbar.set_label("Average Internal Social Support", fontsize=14)

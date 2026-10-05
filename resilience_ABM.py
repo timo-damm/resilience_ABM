@@ -59,7 +59,7 @@ class ModelConfig:
 
     # simulation
     T: int = 200
-    num_runs: int = 100
+    num_runs: int = 50
 
 cfg = ModelConfig()
 
@@ -401,16 +401,16 @@ results, final_node_data, network_stats = run_all(
 # old visualisations (shows volatility)
 plt.figure(figsize=(10, 6))
 alpha_val = 0.07
-plt.plot(results["group_resilience"].T,            alpha=alpha_val, color="tab:blue")
+#plt.plot(results["group_resilience"].T,            alpha=alpha_val, color="tab:blue")
 plt.plot(results["mean_individual_resilience"].T,  alpha=alpha_val, color="tab:orange")
-plt.plot(results["causes_of_burnout"].T,           alpha=alpha_val, color="tab:red")
-plt.plot(results["internal_social_support"].T,     alpha=alpha_val, color="tab:green")
-plt.plot(results["mean_external_social_support"].T,alpha=alpha_val, color="tab:purple")
-plt.plot(results["repression"].T,                  alpha=alpha_val, color="black")
+#plt.plot(results["causes_of_burnout"].T,           alpha=alpha_val, color="tab:red")
+#plt.plot(results["internal_social_support"].T,     alpha=alpha_val, color="tab:green")
+#plt.plot(results["mean_external_social_support"].T,alpha=alpha_val, color="tab:purple")
+#plt.plot(results["repression"].T,                  alpha=alpha_val, color="black")
 plt.ylim(-1, 1)
 plt.xlabel("Time")
 plt.ylabel("Value")
-plt.title("Model Volatility Across 100 Runs")
+plt.title("Model Volatility Across 100 Runs (internal social support)")
 plt.tight_layout()
 #plt.show()
 
@@ -436,7 +436,7 @@ for key, color in plot_vars:
 plt.ylim(-1, 1)
 plt.xlabel("Time")
 plt.ylabel("Value")
-plt.title("Empirical Case + Recovery")
+plt.title("Empirical Case + Recovery (individual resilience)")
 plt.tight_layout()
 #plt.show()
 
@@ -572,3 +572,4 @@ print(f"External support level vs mean support given:    r = {r_level_given:.3f}
 print(f"External support level vs mean support received: r = {r_level_recv:.3f} (p = {p_level_recv:.3g})")
 
 # %%
+
