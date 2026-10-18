@@ -26,6 +26,7 @@ repression_schedule = abm.repression_schedule
 timestep_update = abm.timestep_update
 log_state = abm.log_state
 empty_history = abm.empty_history
+run_all = abm.run_all
  
 cfg = ModelConfig()
  
@@ -60,19 +61,27 @@ def rhs(t, y, cfg, k_mean, ess_hat, eps=0.01):
     return [drhat, dR, dB]
 #%%
 # ---------------------------------------------------------------------
-# single real ABM run, mirroring run_all() but for one realization only
+# real runs
 # ---------------------------------------------------------------------
-def run_single_abm(adj_matrix, nodes_df, cfg):
-    G = build_graph(adj_matrix, nodes_df, cfg)
-    history = empty_history()
-    for t in range(cfg.T):
-        G.graph["repression"] = repression_schedule(t, cfg)
-        result = timestep_update(G, cfg)
-        if result == "group dissolved":
-            break
-        support_received, support_given, n_dropout, n_joined = result
-        log_state(G, t, history, support_received, support_given)
-    return history
+def run_abm_ensemble(adj_matrix, nodes_df, cfg, min_runs=2):
+    results = abm.results          
+
+    n_alive = np.sum(~np.isnan(results["group_resilience"]), axis=0)
+    last = np.max(np.where(n_alive >= min_runs)[0])   # cut off once too few runs remain
+    sl = slice(0, last + 1)
+
+    out = {}
+    for key in ("mean_individual_resilience", "group_resilience",
+                "causes_of_burnout", "internal_social_support"):
+        arr = results[key][:, sl]                     # (num_runs, T_valid), nan-padded
+        p025, p25, p75, p975 = np.nanpercentile(arr, [2.5, 25, 75, 97.5], axis=0)
+        out[key] = {
+            "mean": np.nanmean(arr, axis=0),
+            "median": np.nanmedian(arr, axis=0),
+            "p025": p025, "p25": p25, "p75": p75, "p975": p975,
+        }
+    out["n_alive"] = n_alive[sl]
+    return out
 
 #%%
 # ---------------------------------------------------------------------
@@ -168,65 +177,80 @@ for y0 in initial_conditions:
 ax.add_patch(
     Rectangle(
         (0, -1), 1, 2,
-        facecolor="white", alpha=0.5, edgecolor="none", zorder=5,
+        facecolor="white", alpha=0.6, edgecolor="none", zorder=5,
     )
 )
 
 # ---------------------------------------------------------------------
-# highlighted trajectory: a REAL ABM run, not an ODE integration
-# ----------------------------------------------------------
-history = run_single_abm(adj_matrix, nodes_df, cfg)
- 
-t_hist = np.array(history["t"])
-rhat_emp = np.array(history["mean_individual_resilience"])
-B_emp = np.array(history["causes_of_burnout"])
-iss_emp = np.array(history["internal_social_support"])
-R_emp = np.array(history["group_resilience"])
+# highlighted trajectory: mean over all ABM runs, with percentile bands
+# ---------------------------------------------------------------------
+stats = run_abm_ensemble(adj_matrix, nodes_df, cfg)
 
- 
+PINK_95 = "#f8c8dc"   # light pink: 95% band (2.5th-97.5th percentile)
+PINK_50 = "#e75480"   # darker pink: 50% band (25th-75th percentile)
 
-points = np.array([B_emp, rhat_emp]).T.reshape(-1, 1, 2)
+
+def draw_bands(axis, x, s, alpha95=0.6, alpha50=0.6, zorder=8):
+    axis.fill_between(x, s["p025"], s["p975"], facecolor=PINK_95,
+                      alpha=alpha95, edgecolor="none", zorder=zorder)
+    axis.fill_between(x, s["p25"], s["p75"], facecolor=PINK_50,
+                      alpha=alpha50, edgecolor="none", zorder=zorder + 0.5)
+
+
+rhat_s = stats["mean_individual_resilience"]
+R_s = stats["group_resilience"]
+B_s = stats["causes_of_burnout"]
+iss_s = stats["internal_social_support"]
+
+CENTER = "mean"       # or "median"
+B_m = B_s[CENTER]
+rhat_m = rhat_s[CENTER]
+R_m = R_s[CENTER]
+iss_m = iss_s[CENTER]
+
+# percentile bands around individual resilience (vertical band at each timestep)
+draw_bands(ax, B_m, rhat_s)
+
+# mean trajectory, coloured by mean internal social support
+points = np.array([B_m, rhat_m]).T.reshape(-1, 1, 2)
 segments = np.concatenate([points[:-1], points[1:]], axis=1)
-lc = LineCollection(
-    segments, cmap=cmap, norm=color_norm, linewidth=4, alpha=1.0, zorder=10
-)
-lc.set_array(iss_emp[:-1])
+lc = LineCollection(segments, cmap=cmap, norm=color_norm, linewidth=4, alpha=1.0, zorder=10)
+lc.set_array(iss_m[:-1])
 ax.add_collection(lc)
-ax.plot(B_emp[0], rhat_emp[0], "ko", markersize=6, zorder=11)
+ax.plot(B_m[0], rhat_m[0], "ko", markersize=6, zorder=11)
 ax.axhline(0.0, linestyle="--", color="grey")
 ax.set_xlim(0, 1)
 ax.set_ylim(-1, 1)
 ax.set_xlabel("Causes of Burnout", fontsize=14)
 ax.set_ylabel("Resilience", fontsize=14)
-ax.set_title("Empirical Variant, 55 Weeks of High Repression", fontsize=14)
+#ax.set_title("Ego-Projection, Reproducing Fieldwork", fontsize=14)
 
 mappable = plt.cm.ScalarMappable(cmap=cmap, norm=color_norm)
 mappable.set_array([])
 cbar = plt.colorbar(mappable, ax=ax)
 cbar.set_label("Average Internal Social Support", fontsize=14)
 
+# group resilience (dotted) with the same pink bands, fainter
 ax_right = ax.twinx()
 ax_right.set_ylim(-1, 1)
-line_right, = ax_right.plot(
-    B_emp, R_emp,
-    linestyle=":", color="black", linewidth=2,
-    label="Average SMO resilience"
-)
+draw_bands(ax_right, B_m, R_s, alpha95=0.25, alpha50=0.25, zorder=6)
+line_right, = ax_right.plot(B_m, R_m, linestyle=":", color="black", linewidth=2,
+                            label="Average SMO resilience")
 ax_right.set_yticks([])
 ax_right.tick_params(right=False, labelright=False)
 
 cmap_obj = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
+line_left_proxy = Line2D([0], [0], color=cmap_obj(0.5), linewidth=4,
+                         label="Average individual resilience")
+band95_proxy = Rectangle((0, 0), 1, 1, facecolor=PINK_95, alpha=0.6, label="95% of runs")
+band50_proxy = Rectangle((0, 0), 1, 1, facecolor=PINK_50, alpha=0.6, label="50% of runs")
 
-line_left_proxy = Line2D(
-    [0], [0], color=cmap_obj(0.5), linewidth=4,
-    label="Average individual resilience "
-)
-
-ax.legend(handles=[line_left_proxy, line_right], loc="upper right")
+ax.legend(handles=[line_left_proxy, line_right, band95_proxy, band50_proxy],
+          loc="upper right")
 
 plt.tight_layout()
-out = Path(__file__).parent / "empirical_shortrep.png"
-#fig.savefig(out, dpi=150, bbox_inches="tight")
+out = Path(__file__).parent / "ma_shortrep.png"
+fig.savefig(out, dpi=150, bbox_inches="tight")
 
 # %%
 # sweeping across whole range of repression
@@ -320,7 +344,7 @@ t_used, sweep_out = sweep_repression(
 # %%
 import pandas as pd
  
-csv_path = Path(__file__).parent / "empirical_sweep.csv"
+csv_path = Path(__file__).parent / "ma_sweep.csv"
  
 rows = []
 for m in sweep_out:
@@ -377,8 +401,8 @@ BASE_DIR = Path(__file__).parent
 empirical_df = pd.read_csv(Path(__file__).parent / "empirical_sweep.csv")
 ma_df = pd.read_csv(Path(__file__).parent / "ma_sweep.csv")
 
-empirical_df["source"] = "Empirical Variant"
-ma_df["source"] = "Mutual Aid Variant"
+empirical_df["source"] = "Ego Projection"
+ma_df["source"] = "Memory-Based Strategy"
 
 combined_df = pd.concat([empirical_df, ma_df], ignore_index=True)
 
@@ -399,8 +423,8 @@ plt.rcParams.update({
 })
 
 STYLE_BY_SOURCE = {
-    "Empirical Variant": {"color": "black", "marker": "o", "linestyle": "-"},
-    "Mutual Aid Variant": {"color": "0.5", "marker": "s", "linestyle": "--"},
+    "Ego Projection": {"color": "black", "marker": "o", "linestyle": "-"},
+    "Memory-Based Strategy": {"color": "0.5", "marker": "s", "linestyle": "--"},
 }
 
 
@@ -428,11 +452,76 @@ plot_metric(axes[1], combined_df, "group_resilience",
 
 axes[1].set_xlabel("Time of Repression Decrease")
 
-fig.suptitle("Individual and Group Resilience Across Repression Sweep",
+fig.suptitle("Individual and Group Resilience Across Repression Durations",
              fontsize=13, y=0.98)
 
 
 plt.tight_layout()
-plt.savefig(Path(__file__).parent / "resilience_comparison_apa.png", dpi=300, bbox_inches="tight")
+#plt.savefig(Path(__file__).parent / "resilience_comparison_apa.png", dpi=300, bbox_inches="tight")
 plt.show()
+# %%
+print("insividual resilience")
+d1 = stats["mean_individual_resilience"]   
+mean, p025, p975 = (np.asarray(d1[k], float) for k in ("mean", "p025", "p975"))
+
+summary = {
+    "max of mean": (np.nanmax(mean),  np.nanargmax(mean)),
+    "min of mean": (np.nanmin(mean), np.nanargmin(mean)),
+    "min of p025": (np.nanmin(p025),  np.nanargmin(p025)),
+    "max of p025": (np.nanmax(p025),  np.nanargmax(p025)),
+    "min of p975": (np.nanmin(p975),  np.nanargmin(p975)),
+    "max of p975": (np.nanmax(p975),  np.nanargmax(p975)),
+}
+
+for name, (value, t) in summary.items():
+    print(f"{name}: {value:.3f} at t = {t}")
+
+print("group resilience")
+d2 = stats["group_resilience"]   
+mean, p025, p975 = (np.asarray(d2[k], float) for k in ("mean", "p025", "p975"))
+
+summary = {
+    "max of mean": (np.nanmax(mean),  np.nanargmax(mean)),
+    "min of mean": (np.nanmin(mean), np.nanargmin(mean)),
+    "min of p025": (np.nanmin(p025),  np.nanargmin(p025)),
+    "max of p025": (np.nanmax(p025),  np.nanargmax(p025)),
+    "min of p975": (np.nanmin(p975),  np.nanargmin(p975)),
+    "max of p975": (np.nanmax(p975),  np.nanargmax(p975)),
+}
+
+for name, (value, t) in summary.items():
+    print(f"{name}: {value:.3f} at t = {t}")
+
+print("causes of burnout")
+d3 = stats["causes_of_burnout"]
+mean = np.asarray(d3["mean"], float)
+
+summary = {
+    "max of mean": (np.nanmax(mean), np.nanargmax(mean)),
+    "min of mean": (np.nanmin(mean), np.nanargmin(mean)),
+}
+
+for name, (value, t) in summary.items():
+    print(f"{name}: {value:.3f} at t = {t}")
+
+print("average internal social support")
+d4 = stats["internal_social_support"]
+mean = np.asarray(d4["mean"], float)
+
+summary = {
+    "max of mean": (np.nanmax(mean), np.nanargmax(mean)),
+    "min of mean": (np.nanmin(mean), np.nanargmin(mean)),
+}
+
+for name, (value, t) in summary.items():
+    print(f"{name}: {value:.3f} at t = {t}")
+# %%
+metrics = ["mean_individual_resilience", "group_resilience"]
+
+summary = (
+    combined_df[combined_df["metric"].isin(metrics)]
+    .pivot_table(index="t_repend", columns=["metric", "source"], values="mean")
+    .round(3)
+)
+print(summary.to_string())
 # %%

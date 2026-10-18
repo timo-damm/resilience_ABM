@@ -58,8 +58,8 @@ class ModelConfig:
     t_repend: int = 70 # time of repression decresase (purely empirical: 70)
 
     # simulation
-    T: int = 200
-    num_runs: int = 50
+    T: int = 300
+    num_runs: int = 100
 
 cfg = ModelConfig()
 
@@ -75,7 +75,7 @@ def build_graph(adj_matrix: pd.DataFrame,
 
     for n in G.nodes():
         G.nodes[n]["individual_resilience"] = np.clip(
-            np.random.normal(0.0, 0.3), -1, 1
+            np.random.normal(0.0, 0.1), -1, 1
         )
 
     G.graph.update({
@@ -163,7 +163,7 @@ def timestep_update(G, cfg: ModelConfig):
         
          # each neighbour's need  
         needs = {
-            nb: max(0.0, cfg.tau - G.nodes[n]["social_support"] - G.nodes[nb]["individual_resilience"]) #change between nb and n here to adjust between the two variants
+            nb: max(0.0, cfg.tau - G.nodes[nb]["social_support"] - G.nodes[n]["individual_resilience"]) #change between nb and n here to adjust between the two variants
             for nb in neighbors
         }
         total_need = sum(needs.values())
@@ -514,19 +514,19 @@ scatter = plt.scatter(
     s=20
 )
 
-plt.xlabel("External Social Support")
-plt.ylabel("Individual Resilience at End")
-plt.title(
-    "Individual Resilience vs External Social Support\n"
-    "Coloured by Internal Social Support"
-)
+plt.xlabel("External Social Support", fontsize=14)
+plt.ylabel("Individual Resilience at End", fontsize=14)
+#plt.title(
+#    "Individual Resilience vs External Social Support\n"
+#    "Coloured by Internal Social Support"
+#)
 
 cbar = plt.colorbar(scatter)
-cbar.set_label("Internal Support Balance")
+cbar.set_label("Internal Support Balance", fontsize=14)
 
 plt.tight_layout()
 #plt.show()
-out = Path(__file__).parent / "empirical_shortrep_support_distro.png"
+out = Path(__file__).parent / "ma_shortrep_support_distro.png"
 #plt.savefig(out, dpi=150, bbox_inches="tight")
 
 
