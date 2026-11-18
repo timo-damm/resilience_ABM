@@ -1,0 +1,14 @@
+[project]
+name = "resilience_ABM"
+version = "0.1.0"
+description = "Agent-based model of resilience at indiivdual and group level. Including sensitivity analyses and visualisations."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib",
+    "networkx",
+    "numpy",
+    "pandas",
+    "scipy",
+    "statsmodels",
+]

@@ -1,4 +1,6 @@
+# ---- PREPARATIONS AND ODE DEFINITION ----
 # %%
+# preparations
 import importlib.util
 import sys
 from pathlib import Path
@@ -9,8 +11,7 @@ from matplotlib.patches import Rectangle
 from scipy.integrate import solve_ivp
 from matplotlib.lines import Line2D
 
-# --- adjust this import to match your ABM script's filename/module ---
-# --- load the ABM module the same way your other script does ---
+# load the ABM module the same way your other script does
 ABM_PATH = Path(__file__).parent / "resilience_ABM.py"
  
 spec = importlib.util.spec_from_file_location("resilience_ABM", ABM_PATH)
@@ -36,10 +37,8 @@ def sat(x):
 
 
 #%%
-# ---------------------------------------------------------------------
-# ODE system, now forced by the real (time-varying) repression schedule
-# instead of a fixed rho
-# ---------------------------------------------------------------------
+# ODE system, for calculating background trajectories with real rho
+
 def iss_hat_fn(rhat, rho, cfg, k_mean, ess_hat, alpha=0.015, eps=0.0):
     rhat = np.asarray(rhat, dtype=float)
     need = cfg.tau - ess_hat - rhat
@@ -60,9 +59,8 @@ def rhs(t, y, cfg, k_mean, ess_hat, eps=0.01):
         dB = 0.0
     return [drhat, dR, dB]
 #%%
-# ---------------------------------------------------------------------
 # real runs
-# ---------------------------------------------------------------------
+
 def run_abm_ensemble(adj_matrix, nodes_df, cfg, min_runs=2):
     results = abm.results          
 
@@ -83,20 +81,17 @@ def run_abm_ensemble(adj_matrix, nodes_df, cfg, min_runs=2):
     out["n_alive"] = n_alive[sl]
     return out
 
+# ---- MAIN VISUALISATION ----
 #%%
-# ---------------------------------------------------------------------
 # time window: match the ABM's discrete steps exactly
-# ---------------------------------------------------------------------
 tspan = (0, cfg.T - 1)
 t_eval = np.arange(cfg.T)
 
 
 # ---------------------------------------------------------------------
-# background streamlines: grid of ODE trajectories under the real
-# repression schedule
-# ---------------------------------------------------------------------
-n_rhat = 21
-n_B = 21
+# background : grid of ODE trajectories under real repression
+n_rhat = 11 #21 before, was too cluttered
+n_B = 11
 R_fixed = 0.0
 
 rhat_grid_vals = np.linspace(-1, 1, n_rhat)
@@ -155,23 +150,23 @@ for y0 in initial_conditions:
             arrowprops={
                 "arrowstyle": "->",
                 "color": "k",
-                "lw": 1,
-                "mutation_scale": 12,
-                "alpha": 0.7,
+                "lw": 1.5,
+                "mutation_scale": 20,
+                "alpha": 1.0,
                 "shrinkA": 0,
                 "shrinkB": 0,
             },
 
         )
 
-    ax.plot(B[0], rhat[0], "o", color="k", markersize=2, alpha=0.6)
+    ax.plot(B[0], rhat[0], "o", color="k", markersize=5, alpha=0.6)
 
 
 #ax.set_xlabel("Causes of Burnout", fontsize=14)
 #ax.set_ylabel("Resilience", fontsize=14)
 #ax.set_title(r"Phase trajectories at $\rho = 0.2$", fontsize=14)
 
-#out = Path(__file__).parent / "phase_2D_replow.png"
+#out = Path(__file__).parent / "output" / "phase_2D_replow.png"
 #fig.savefig(out, dpi=150, bbox_inches="tight")
 
 ax.add_patch(
@@ -181,9 +176,7 @@ ax.add_patch(
     )
 )
 
-# ---------------------------------------------------------------------
 # highlighted trajectory: mean over all ABM runs, with percentile bands
-# ---------------------------------------------------------------------
 stats = run_abm_ensemble(adj_matrix, nodes_df, cfg)
 
 PINK_95 = "#f8c8dc"   # light pink: 95% band (2.5th-97.5th percentile)
@@ -230,7 +223,7 @@ mappable.set_array([])
 cbar = plt.colorbar(mappable, ax=ax)
 cbar.set_label("Average Internal Social Support", fontsize=14)
 
-# group resilience (dotted) with the same pink bands, fainter
+# group resilience (dotted) with the same pink bands
 ax_right = ax.twinx()
 ax_right.set_ylim(-1, 1)
 draw_bands(ax_right, B_m, R_s, alpha95=0.25, alpha50=0.25, zorder=6)
@@ -239,8 +232,7 @@ line_right, = ax_right.plot(B_m, R_m, linestyle=":", color="black", linewidth=2,
 ax_right.set_yticks([])
 ax_right.tick_params(right=False, labelright=False)
 
-cmap_obj = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
-line_left_proxy = Line2D([0], [0], color=cmap_obj(0.5), linewidth=4,
+line_left_proxy = Line2D([0], [0], color="grey", linewidth=4,
                          label="Average individual resilience")
 band95_proxy = Rectangle((0, 0), 1, 1, facecolor=PINK_95, alpha=0.6, label="95% of runs")
 band50_proxy = Rectangle((0, 0), 1, 1, facecolor=PINK_50, alpha=0.6, label="50% of runs")
@@ -249,9 +241,10 @@ ax.legend(handles=[line_left_proxy, line_right, band95_proxy, band50_proxy],
           loc="upper right")
 
 plt.tight_layout()
-out = Path(__file__).parent / "ma_shortrep.png"
-fig.savefig(out, dpi=150, bbox_inches="tight")
+out = Path(__file__).parent / "output" / "ma_shortrep.png"
+#fig.savefig(out, dpi=150, bbox_inches="tight")
 
+# ---- MECHANISM COMPARISON FIGURE ----
 # %%
 # sweeping across whole range of repression
 
@@ -262,7 +255,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-ABM_PATH = Path(__file__).parent / "resilience_ABM.py"
+ABM_PATH = Path(__file__).parent / "output" / "resilience_ABM.py"
  
 spec = importlib.util.spec_from_file_location("resilience_ABM", ABM_PATH)
 abm = importlib.util.module_from_spec(spec)
@@ -308,12 +301,6 @@ def summarise(final_vals: np.ndarray):
 
 def sweep_repression(adj_matrix, nodes_df, cfg, t_repend_values,
                       metrics=("group_resilience", "mean_individual_resilience")):
-    """Run the model once per t_repend value and collect the final value of each
-    requested metric from every run, then summarise as mean +/- standard error.
-
-    Returns t_used plus a dict keyed by metric name, each holding (mean, sem, n_valid)
-    arrays over t_repend_values.
-    """
     out = {m: {"mean": [], "sem": [], "n_valid": []} for m in metrics}
 
     for t_repend in t_repend_values:
@@ -330,7 +317,7 @@ def sweep_repression(adj_matrix, nodes_df, cfg, t_repend_values,
     t_used = np.asarray(t_repend_values, dtype=float)
     for m in metrics:
         out[m] = {k: np.asarray(v) for k, v in out[m].items()}
-    return t_used, out
+    return t_used, out # model is run once for each repression duration and saved together
 
 
 # %%
@@ -344,7 +331,7 @@ t_used, sweep_out = sweep_repression(
 # %%
 import pandas as pd
  
-csv_path = Path(__file__).parent / "ma_sweep.csv"
+csv_path = Path(__file__).parent / "output" / "ma_sweep.csv"
  
 rows = []
 for m in sweep_out:
@@ -387,19 +374,17 @@ plt.tight_layout()
 plt.show()
 # %%
 
-# ------- PLOT: empirical_sweep.csv vs ma_sweep.csv (APA style) ---------
+# PLOT: empirical_sweep.csv vs ma_sweep.csv 
 # %%
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
-BASE_DIR = Path(__file__).parent
-
 # %%
 # load both sweep result sets and tag their source
-empirical_df = pd.read_csv(Path(__file__).parent / "empirical_sweep.csv")
-ma_df = pd.read_csv(Path(__file__).parent / "ma_sweep.csv")
+empirical_df = pd.read_csv(Path(__file__).parent / "output" / "empirical_sweep.csv")
+ma_df = pd.read_csv(Path(__file__).parent / "output" / "ma_sweep.csv")
 
 empirical_df["source"] = "Ego Projection"
 ma_df["source"] = "Memory-Based Strategy"
@@ -408,27 +393,21 @@ combined_df = pd.concat([empirical_df, ma_df], ignore_index=True)
 
 # %%
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["Times New Roman", "Liberation Serif", "DejaVu Serif"],
-    "font.size": 12,
-    "axes.titlesize": 12,
-    "axes.labelsize": 12,
     "axes.spines.top": False,
     "axes.spines.right": False,
     "axes.grid": False,
     "legend.frameon": False,
-    "legend.fontsize": 11,
-    "xtick.labelsize": 11,
-    "ytick.labelsize": 11,
 })
 
+LABEL_FS = 14   
+
 STYLE_BY_SOURCE = {
-    "Ego Projection": {"color": "black", "marker": "o", "linestyle": "-"},
-    "Memory-Based Strategy": {"color": "0.5", "marker": "s", "linestyle": "--"},
+    "Ego Projection":        {"color": "#1f3a93", "marker": "o", "linestyle": "-"},
+    "Memory-Based Strategy": {"color": "#e69f00", "marker": "s", "linestyle": "--"},
 }
 
 
-def plot_metric(ax, df, metric, ylabel):
+def plot_metric(ax, df, metric, title):
     for source, sub in df[df["metric"] == metric].groupby("source"):
         sub = sub.sort_values("t_repend")
         style = STYLE_BY_SOURCE.get(source, {})
@@ -437,7 +416,8 @@ def plot_metric(ax, df, metric, ylabel):
             capsize=3, markersize=5, linewidth=1.2, label=source,
             **style,
         )
-    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontsize=LABEL_FS)
+    ax.set_ylabel("Resilience", fontsize=LABEL_FS)
     ax.legend(loc="best")
 
 
@@ -446,19 +426,18 @@ def plot_metric(ax, df, metric, ylabel):
 fig, axes = plt.subplots(2, 1, figsize=(7, 8), sharex=True)
 
 plot_metric(axes[0], combined_df, "mean_individual_resilience",
-            "Mean Individual Resilience")
+            "Individual Resilience")
 plot_metric(axes[1], combined_df, "group_resilience",
-            "Mean Group Resilience")
+            "Group Resilience")
 
-axes[1].set_xlabel("Time of Repression Decrease")
+axes[1].set_xlabel("Time of Repression Decrease", fontsize=LABEL_FS)
 
 fig.suptitle("Individual and Group Resilience Across Repression Durations",
-             fontsize=13, y=0.98)
-
+             fontsize=LABEL_FS, y=0.98)
 
 plt.tight_layout()
-#plt.savefig(Path(__file__).parent / "resilience_comparison_apa.png", dpi=300, bbox_inches="tight")
-plt.show()
+plt.savefig(Path(__file__).parent / "output" / "resilience_comparison_apa.png", dpi=300, bbox_inches="tight")
+
 # %%
 print("insividual resilience")
 d1 = stats["mean_individual_resilience"]   

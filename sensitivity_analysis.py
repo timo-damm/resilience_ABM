@@ -3,38 +3,11 @@
 import importlib.util
 import sys
 from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-
-# %%
-"""
-OFAT Sensitivity Analysis – Positive Fixed Point (resilience ≈ +1)
-===================================================================
-Imports resilience_ABM.py from the same directory and probes how
-easily the model is displaced from its positive boundary fixed point
-by perturbing the INITIAL VALUES of two state variables:
-
-  • group_resilience      (graph-level, swept across [−1, +1])
-  • causes_of_burnout     (graph-level, swept across [0, 1])
-
-And by sweeping REPRESSION SCHEDULE parameters:
-
-  • rep_low   swept from 0.0 to 0.5 (step 0.1)
-  • rep_high  swept from 0.5 to 1.0 (step 0.1)
-
-For the repression sweeps individual resilience is clamped at +1
-and all other state/config values are held at their defaults.
-100 replicates × 100 timesteps per condition.
-"""
-# %%
-import importlib.util
-import sys
-from pathlib import Path
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
 
 # ── locate & import the ABM ──────────────────────────────────────────────────
 ABM_PATH = Path(__file__).parent / "resilience_ABM.py"
@@ -230,7 +203,7 @@ for rep_param, val_dict in rep_results.items():
         })
 
 df = pd.DataFrame(rows)
-df.to_csv(Path(__file__).parent / "ofat_summary_new.csv", index=False)
+df.to_csv(Path(__file__).parent / "output" / "ofat_summary_new.csv", index=False)
 
 # %%
 # ── plot config ───────────────────────────────────────────────────────────────
@@ -276,7 +249,7 @@ for param, val_dict in results_store.items():
         fontsize=11, y=1.01,
     )
     plt.tight_layout()
-    out = Path(__file__).parent / f"ofat_{param}_timeseries.png"
+    out = Path(__file__).parent / "output" / f"ofat_{param}_timeseries.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -318,7 +291,7 @@ for rep_param, val_dict in rep_results.items():
         fontsize=11, y=1.01,
     )
     plt.tight_layout()
-    out = Path(__file__).parent / f"ofat_{rep_param}_timeseries.png"
+    out = Path(__file__).parent / "output" /  f"ofat_{rep_param}_timeseries.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -359,43 +332,73 @@ fig.suptitle(
     fontsize=11,
 )
 plt.tight_layout()
-out = Path(__file__).parent / "ofat_displacement_summary.png"
+out = Path(__file__).parent / "output" / "ofat_displacement_summary.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 
 # %%
 # =============================================================================
-# GLOBAL SENSITIVITY ANALYSIS – OLS regression over 10 000 random samples
+# GLOBAL SENSITIVITY ANALYSIS - OLS with effect sizes that do not depend on N
 # =============================================================================
-# Each run draws one sample from the joint parameter space:
-#   init_indiv_res  ~ Uniform(−1,  +1)
-#   init_group_res  ~ Uniform(−1,  +1)
-#   init_cob        ~ Uniform( 0,   1)
-#   rep_low         ~ Uniform( 0, 0.5)
-#   rep_high        ~ Uniform(0.5,  1)
+# Inputs (Latin hypercube sample, 10 000 runs):
+#   init_indiv_res ~ U(-1, 1)     init_group_res ~ U(-1, 1)
+#   init_cob       ~ U( 0, 1)
+#   rep_low        ~ U( 0, 0.5)   rep_high       ~ U(0.5, 1)
+# Outcome: mean individual resilience at t = 100 (single stochastic run).
 #
-# The outcome is mean_individual_resilience at t = 100 from a single
-# stochastic run.  OLS (with standardised inputs) yields standardised
-# coefficients that are directly comparable across parameters.
+# Reported per predictor:
+#   coef        raw OLS coefficient (change in outcome per 1 SD of the input)
+#   beta        standardised coefficient (change in outcome-SD per 1 SD input)
+#   partial R2  share of the variance left over by the other predictors
+#   f2          Cohen's f2 = partial R2 / (1 - partial R2)
+#   delta R2    unique variance (R2_full - R2_without_predictor)
+#   S1          non-parametric first-order index Var(E[Y|X_i]) / Var(Y),
+#               captures non-linear main effects
+# All with bootstrap 95% CIs (resampling runs).
 # =============================================================================
 
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 import statsmodels.api as sm
-from scipy import stats as scipy_stats
+from scipy.stats import qmc
 
-GSA_N = 10_000
-GSA_T = 100
-rng   = np.random.default_rng(seed=42)
+GSA_N  = 10_000
+GSA_T  = 100
+N_BOOT = 2_000
+SEED   = 42
 
-# ── Latin-hypercube-style uniform sampling ────────────────────────────────────
-gsa_init_indiv = rng.uniform(-1.0,  1.0, GSA_N)
-gsa_init_group = rng.uniform(-1.0,  1.0, GSA_N)
-gsa_init_cob   = rng.uniform( 0.0,  1.0, GSA_N)
-gsa_rep_low    = rng.uniform( 0.0,  0.5, GSA_N)
-gsa_rep_high   = rng.uniform( 0.5,  1.0, GSA_N)
+FEATURE_COLS = ["init_indiv_res", "init_group_res", "init_cob",
+                "rep_low", "rep_high"]
+LOWER = [-1.0, -1.0, 0.0, 0.0, 0.5]
+UPPER = [ 1.0,  1.0, 1.0, 0.5, 1.0]
+
+FEATURE_LABELS = {
+    "init_indiv_res": "Initial\nIndiv. Resilience",
+    "init_group_res": "Initial\nGroup Resilience",
+    "init_cob":       "Initial\nCauses of Burnout",
+    "rep_low":        "Repression\nLow",
+    "rep_high":       "Repression\nHigh",
+}
+LATEX_LABELS = {
+    "init_indiv_res": r"Individual Resilience ($\hat{r}$)",
+    "init_group_res": r"Group Resilience ($R$)",
+    "init_cob":       r"Causes of Burnout ($B$)",
+    "rep_low":        r"Stressors Minimum ($\rho_{min}$)",
+    "rep_high":       r"Stressors Maximum ($\rho_{max}$)",
+}
+
+# ── Latin hypercube sample (replaces independent uniform draws) ───────────────
+sampler = qmc.LatinHypercube(d=len(FEATURE_COLS), seed=SEED)
+sample  = qmc.scale(sampler.random(GSA_N), LOWER, UPPER)   # shape (GSA_N, 5)
+
+gsa_init_indiv, gsa_init_group, gsa_init_cob, gsa_rep_low, gsa_rep_high = sample.T
 
 gsa_outcomes = np.empty(GSA_N)
 
-print(f"\nRunning {GSA_N} global sensitivity runs …")
+print(f"\nRunning {GSA_N} global sensitivity runs ...")
 for i in range(GSA_N):
     if (i + 1) % 1000 == 0:
         print(f"  {i + 1}/{GSA_N}")
@@ -422,148 +425,214 @@ for i in range(GSA_N):
     else:
         gsa_outcomes[i] = np.nan   # group dissolved
 
-# ── build design matrix and run OLS ──────────────────────────────────────────
-gsa_df = pd.DataFrame({
-    "init_indiv_res": gsa_init_indiv,
-    "init_group_res": gsa_init_group,
-    "init_cob":       gsa_init_cob,
-    "rep_low":        gsa_rep_low,
-    "rep_high":       gsa_rep_high,
-    "outcome":        gsa_outcomes,
-}).dropna()
+# ── data frames: all runs (for survival) and valid runs (for OLS) ────────────
+gsa_all = pd.DataFrame(sample, columns=FEATURE_COLS)
+gsa_all["outcome"]  = gsa_outcomes
+gsa_all["survived"] = (~np.isnan(gsa_outcomes)).astype(int)
+gsa_df = gsa_all.dropna().reset_index(drop=True)
 
-FEATURE_COLS = ["init_indiv_res", "init_group_res", "init_cob",
-                "rep_low", "rep_high"]
+n_obs = len(gsa_df)
+k     = len(FEATURE_COLS)
+print(f"\nValid runs: {n_obs} / {GSA_N}  "
+      f"(dissolved: {GSA_N - n_obs}, {100 * (GSA_N - n_obs) / GSA_N:.1f}%)")
 
-# standardise inputs (zero mean, unit variance) so coefficients are comparable
 X_raw = gsa_df[FEATURE_COLS].values
-X_std = (X_raw - X_raw.mean(axis=0)) / X_raw.std(axis=0)
 y     = gsa_df["outcome"].values
 
-X_with_const = sm.add_constant(X_std)
-ols_model    = sm.OLS(y, X_with_const).fit()
 
-print("\n── OLS Results (standardised inputs) ──────────────────────────────")
+def standardise(a):
+    return (a - a.mean(axis=0)) / a.std(axis=0)
+
+
+X_std = standardise(X_raw)
+
+# ── 1. Classic OLS (raw outcome, standardised inputs) ────────────────────────
+ols_model = sm.OLS(y, sm.add_constant(X_std)).fit()
+print("\n-- OLS Results (standardised inputs, raw outcome) --")
 print(ols_model.summary())
+ci_raw = np.asarray(ols_model.conf_int())[1:]          # drop intercept
+coef   = np.asarray(ols_model.params)[1:]
+R2_full = ols_model.rsquared
 
-# collect tidy results table
-ci      = np.asarray(ols_model.conf_int())   # shape (n_params, 2)
-ols_results = pd.DataFrame({
-    "parameter":   ["intercept"] + FEATURE_COLS,
-    "coefficient": np.asarray(ols_model.params).ravel(),
-    "std_err":     np.asarray(ols_model.bse).ravel(),
-    "t_stat":      np.asarray(ols_model.tvalues).ravel(),
-    "p_value":     np.asarray(ols_model.pvalues).ravel(),
-    "ci_low":      ci[:, 0],
-    "ci_high":     ci[:, 1],
+
+# ── 2. Effect-size helpers ───────────────────────────────────────────────────
+def ols_effects(X, y):
+    """Standardised beta and partial R2 from OLS on re-standardised X and y.
+    Returns beta (k,), partial_r2 (k,), R2 (float)."""
+    n, kk = X.shape
+    Xz = standardise(X)
+    yz = (y - y.mean()) / y.std()
+    Z  = np.column_stack([np.ones(n), Xz])
+    ZtZ_inv = np.linalg.inv(Z.T @ Z)
+    b     = ZtZ_inv @ Z.T @ yz
+    resid = yz - Z @ b
+    df    = n - kk - 1
+    s2    = resid @ resid / df
+    se    = np.sqrt(s2 * np.diag(ZtZ_inv))
+    t     = b / se
+    pr2   = t[1:] ** 2 / (t[1:] ** 2 + df)
+    R2    = 1.0 - (resid @ resid) / n          # sum(yz^2) = n
+    return b[1:], pr2, R2
+
+
+def first_order_index(x, y, bins=20):
+    """Bias-corrected Var(E[Y|X])/Var(Y) from equal-count bins."""
+    order  = np.argsort(x)
+    groups = np.array_split(order, bins)
+    ybar   = y.mean()
+    ssb    = sum(len(g) * (y[g].mean() - ybar) ** 2 for g in groups)
+    sst    = ((y - ybar) ** 2).sum()
+    msw    = (sst - ssb) / (len(y) - bins)
+    return (ssb - (bins - 1) * msw) / sst
+
+
+# ── 3. Point estimates ───────────────────────────────────────────────────────
+beta, pr2, R2 = ols_effects(X_raw, y)
+f2     = pr2 / (1.0 - pr2)
+dR2    = f2 * (1.0 - R2)                 # unique variance explained
+S1     = np.array([first_order_index(X_raw[:, j], y) for j in range(k)])
+
+# ── 4. Bootstrap CIs (resample runs) ─────────────────────────────────────────
+rng_b = np.random.default_rng(SEED)
+boot_beta = np.empty((N_BOOT, k))
+boot_pr2  = np.empty((N_BOOT, k))
+boot_S1   = np.empty((N_BOOT, k))
+for bi in range(N_BOOT):
+    idx = rng_b.integers(0, n_obs, n_obs)
+    Xb, yb = X_raw[idx], y[idx]
+    boot_beta[bi], boot_pr2[bi], _ = ols_effects(Xb, yb)
+    boot_S1[bi] = [first_order_index(Xb[:, j], yb) for j in range(k)]
+
+q = lambda a: np.percentile(a, [2.5, 97.5], axis=0)
+beta_lo, beta_hi = q(boot_beta)
+pr2_lo,  pr2_hi  = q(boot_pr2)
+f2_lo, f2_hi     = pr2_lo / (1 - pr2_lo), pr2_hi / (1 - pr2_hi)
+S1_lo,  S1_hi    = q(boot_S1)
+
+effects = pd.DataFrame({
+    "parameter":  FEATURE_COLS,
+    "coef":       coef,
+    "coef_lo":    ci_raw[:, 0],
+    "coef_hi":    ci_raw[:, 1],
+    "beta":       beta,    "beta_lo": beta_lo, "beta_hi": beta_hi,
+    "partial_r2": pr2,     "pr2_lo":  pr2_lo,  "pr2_hi":  pr2_hi,
+    "f2":         f2,      "f2_lo":   f2_lo,   "f2_hi":   f2_hi,
+    "delta_r2":   dR2,
+    "S1":         S1,      "S1_lo":   S1_lo,   "S1_hi":   S1_hi,
 })
-print("\nR² =", round(ols_model.rsquared, 4),
-      "  Adj-R² =", round(ols_model.rsquared_adj, 4))
 
-# ── Figure 4: standardised coefficients (feature importance) ─────────────────
-coef_df = ols_results[ols_results["parameter"] != "intercept"].copy()
+pd.set_option("display.width", 200)
+pd.set_option("display.float_format", lambda v: f"{v:.4f}")
+print(f"\n-- Effect sizes (R2 = {R2_full:.4f}, N = {n_obs}) --")
+print(effects.round(4).to_string(index=False))
+print(f"\nSD of outcome (for reference): {y.std(ddof=1):.4f}")
+print(f"Sum of unique dR2 = {dR2.sum():.4f}  (vs full R2 = {R2_full:.4f})")
+print(f"Sum of S1         = {S1.sum():.4f}")
+effects.to_csv(Path(__file__).parent / "output" / "gsa_effect_sizes.csv", index=False)
 
-FEATURE_LABELS = {
-    "init_indiv_res": "Initial\nIndiv. Resilience",
-    "init_group_res": "Initial\nGroup Resilience",
-    "init_cob":       "Initial\nCauses of Burnout",
-    "rep_low":        "Repression\nLow",
-    "rep_high":       "Repression\nHigh",
-}
+# LaTeX-ready table rows
+print("\n-- LaTeX rows: coef [CI] & beta [CI] & partial R2 & f2 [CI] & S1 --")
+for _, r in effects.iterrows():
+    print(
+        f"{LATEX_LABELS[r.parameter]} & {r.coef:.3f} [{r.coef_lo:.3f}, {r.coef_hi:.3f}] "
+        f"& {r.beta:.2f} [{r.beta_lo:.2f}, {r.beta_hi:.2f}] "
+        f"& {r.partial_r2:.2f} & {r.f2:.2f} [{r.f2_lo:.2f}, {r.f2_hi:.2f}] "
+        f"& {r.S1:.2f} \\\\"
+    )
+
+# ── 5. Non-linearity check: add squared terms ────────────────────────────────
+X_quad  = np.column_stack([X_std, X_std ** 2])
+quad    = sm.OLS(y, sm.add_constant(X_quad)).fit()
+print("\n-- Non-linearity check --")
+print(f"R2 linear = {R2_full:.4f} | R2 with squared terms = {quad.rsquared:.4f} "
+      f"| gain = {quad.rsquared - R2_full:.4f}")
+for name, c, p in zip(FEATURE_COLS, np.asarray(quad.params)[k + 1:],
+                      np.asarray(quad.pvalues)[k + 1:]):
+    print(f"  squared {name:15s} coef = {c:+.4f}  (p = {p:.2g})")
+
+# ── 6. Survival model: which parameters drive group dissolution? ─────────────
+X_all_std = standardise(gsa_all[FEATURE_COLS].values)
+logit = sm.Logit(gsa_all["survived"].values, sm.add_constant(X_all_std)).fit(disp=0)
+print("\n-- Logit for survival (1 = group survived), standardised inputs --")
+print(f"McFadden pseudo-R2 = {logit.prsquared:.4f}")
+for name, b_, lo, hi in zip(FEATURE_COLS, np.asarray(logit.params)[1:],
+                            *np.asarray(logit.conf_int())[1:].T):
+    print(f"  {name:15s} OR per SD = {np.exp(b_):.2f}  "
+          f"[{np.exp(lo):.2f}, {np.exp(hi):.2f}]")
+
+# ── Figure 4: standardised coefficients with bootstrap CIs ───────────────────
+coef_df = effects.copy()
 coef_df["label"] = coef_df["parameter"].map(FEATURE_LABELS)
-
-bar_colors = ["tomato" if c < 0 else "steelblue"
-              for c in coef_df["coefficient"]]
+bar_colors = ["tomato" if b_ < 0 else "steelblue" for b_ in coef_df["beta"]]
 
 fig, ax = plt.subplots(figsize=(8, 4))
-bars = ax.bar(
-    coef_df["label"], coef_df["coefficient"],
-    color=bar_colors, edgecolor="white", linewidth=0.6,
-)
-ax.errorbar(
-    coef_df["label"],
-    coef_df["coefficient"],
-    yerr=1.96 * coef_df["std_err"],
-    fmt="none", color="black", capsize=4, lw=1.2,
-)
+bars = ax.bar(coef_df["label"], coef_df["beta"],
+              color=bar_colors, edgecolor="white", linewidth=0.6)
+ax.errorbar(coef_df["label"], coef_df["beta"],
+            yerr=[coef_df["beta"] - coef_df["beta_lo"],
+                  coef_df["beta_hi"] - coef_df["beta"]],
+            fmt="none", color="black", capsize=4, lw=1.2)
 ax.axhline(0, color="black", lw=0.8)
-ax.set_ylabel("Standardised OLS coefficient", fontsize=10)
+ax.set_ylabel(r"Standardised coefficient ($\beta$)", fontsize=10)
 ax.set_title(
-    f"Global Sensitivity Analysis – Effect on Mean Individual Resilience at T={GSA_T}\n"
-    f"OLS on {len(gsa_df):,} runs  |  R² = {ols_model.rsquared:.3f}",
+    f"Global Sensitivity Analysis - Effect on Mean Individual Resilience at T={GSA_T}\n"
+    f"OLS on {n_obs:,} runs  |  R² = {R2_full:.3f}  |  bars: 95% bootstrap CI",
     fontsize=11,
 )
-
-# annotate p-values above / below each bar
-for bar, (_, row) in zip(bars, coef_df.iterrows()):
-    p = row["p_value"]
-    sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
-    y_pos = row["coefficient"] + 1.96 * row["std_err"]
-    y_pos += 0.005 if y_pos >= 0 else -0.015
-    ax.text(bar.get_x() + bar.get_width() / 2, y_pos,
-            sig, ha="center", va="bottom", fontsize=9)
+for bar, (_, r) in zip(bars, coef_df.iterrows()):
+    if r.beta >= 0:
+        ypos, va = r.beta_hi + 0.015, "bottom"
+    else:
+        ypos, va = r.beta_lo - 0.015, "top"
+    ax.text(bar.get_x() + bar.get_width() / 2, ypos,
+            f"{r.beta:.2f}", ha="center", va=va, fontsize=9)
+ax.margins(y=0.15)
 
 plt.tight_layout()
-out = Path(__file__).parent / "gsa_ols_coefficients.png"
+out = Path(__file__).parent / "output" / "gsa_ols_coefficients.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"\nSaved {out.name}")
 
-# ── Figure 5: partial regression plots ───────────────────────────────────────
-fig, axes = plt.subplots(1, len(FEATURE_COLS),
-                         figsize=(4 * len(FEATURE_COLS), 4),
-                         sharey=True)
-
-partial_r2 = {}
+# ── Figure 5: partial regression plots (with LOWESS to show non-linearity) ───
+fig, axes = plt.subplots(1, k, figsize=(4 * k, 4), sharey=True)
 
 for ax, (col_i, feat) in zip(axes, enumerate(FEATURE_COLS)):
-    # residualise y and the focal feature against all other features
-    others   = [j for j in range(len(FEATURE_COLS)) if j != col_i]
+    others   = [j for j in range(k) if j != col_i]
     X_others = sm.add_constant(X_std[:, others])
 
-    fit_y    = sm.OLS(y,               X_others).fit()
-    fit_feat = sm.OLS(X_std[:, col_i], X_others).fit()
-    res_y    = fit_y.resid
-    res_feat = fit_feat.resid
+    res_y    = sm.OLS(y,               X_others).fit().resid
+    res_feat = sm.OLS(X_std[:, col_i], X_others).fit().resid
 
-    # partial R²: SSR reduction from adding this feature / SST of reduced model
-    # equivalently: corr(res_feat, res_y)²
-    pr2 = np.corrcoef(res_feat, res_y)[0, 1] ** 2
-    partial_r2[feat] = pr2
-
-    # bin into 40 quantile bins for a clean scatter
     order   = np.argsort(res_feat)
     bin_idx = np.array_split(order, 40)
     bx = [res_feat[b].mean() for b in bin_idx]
     by = [res_y[b].mean()    for b in bin_idx]
-
     ax.scatter(bx, by, s=18, alpha=0.7, color="steelblue", edgecolors="none")
 
-    # overlay OLS line
     slope = np.polyfit(res_feat, res_y, 1)
     xline = np.linspace(res_feat.min(), res_feat.max(), 100)
-    ax.plot(xline, np.polyval(slope, xline), color="tomato", lw=1.5)
+    ax.plot(xline, np.polyval(slope, xline), color="tomato", lw=1.5, label="linear")
+
+    lw_fit = sm.nonparametric.lowess(res_y, res_feat, frac=0.3)
+    ax.plot(lw_fit[:, 0], lw_fit[:, 1], color="black", lw=1.2, ls="--", label="LOWESS")
 
     ax.axhline(0, color="grey", lw=0.5, ls="--")
     ax.axvline(0, color="grey", lw=0.5, ls="--")
     ax.set_xlabel(FEATURE_LABELS[feat], fontsize=9)
     if col_i == 0:
         ax.set_ylabel("Residual outcome", fontsize=9)
-    ax.set_title(f"{FEATURE_LABELS[feat]}\npartial R² = {pr2:.4f}", fontsize=9)
+        ax.legend(fontsize=8, frameon=False)
+    ax.set_title(f"{FEATURE_LABELS[feat]}\npartial R² = {pr2[col_i]:.3f}", fontsize=9)
 
 fig.suptitle(
-    "Partial Regression Plots – Global Sensitivity Analysis\n"
+    "Partial Regression Plots - Global Sensitivity Analysis\n"
     "(binned means, each feature partialled out against the rest)",
     fontsize=11,
 )
 plt.tight_layout()
-out = Path(__file__).parent / "gsa_partial_regression.png"
+out = Path(__file__).parent / "output" / "output" /  "gsa_partial_regression.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Saved {out.name}")
-
-# print partial R² summary
-print("\n── Partial R² per predictor ────────────────────────────────────────")
-for feat, pr2 in partial_r2.items():
-    print(f"  {FEATURE_LABELS[feat].replace(chr(10), ' '):35s}  partial R² = {pr2:.4f}")
 # %%

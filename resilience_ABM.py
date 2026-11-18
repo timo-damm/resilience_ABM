@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
+from scipy.stats import pearsonr, spearmanr
 
 # import data
 BASE_DIR = Path(__file__).parent
@@ -396,7 +397,7 @@ results, final_node_data, network_stats = run_all(
     adj_matrix, nodes_df, cfg
 )
 # %% 
-# VISUALISATIONS
+# ---- VISUALISATIONS AND METRICS -----
 # %%
 # old visualisations (shows volatility)
 plt.figure(figsize=(10, 6))
@@ -415,30 +416,55 @@ plt.tight_layout()
 #plt.show()
 
 # %%
-plt.figure(figsize=(10, 6))
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    "font.size": 14,
+    "axes.labelsize": 10,
+    "axes.linewidth": 0.8,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "xtick.direction": "out",
+    "ytick.direction": "out",
+    "legend.fontsize": 8.5,
+})
+
+fig, ax = plt.subplots(figsize=(7, 4.2))  
+
 alpha_val = 0.05
 
 plot_vars = [
-    ("group_resilience",           "tab:blue"),
-    ("mean_individual_resilience", "tab:orange"),
-    ("causes_of_burnout",          "tab:red"),
-    ("internal_social_support",    "tab:green"),
-    ("mean_external_social_support","tab:purple"),
-    ("repression",                 "black"),
+    ("group_resilience",            "tab:blue",   "Group resilience"),
+    ("mean_individual_resilience",  "tab:orange", "Mean individual resilience"),
+    ("causes_of_burnout",           "tab:red",    "Causes of burnout"),
+    ("internal_social_support",     "tab:green",  "Internal social support"),
+    ("mean_external_social_support","tab:purple", "Mean external social support"),
+    ("repression",                  "black",      "Repression"),
 ]
 
-for key, color in plot_vars:
-    arr = results[key] 
-    plt.plot(arr.T, alpha=alpha_val, color=color, linewidth=0.8)
-    median_trajectory = np.nanmedian(arr, axis=0)
-    plt.plot(median_trajectory, alpha=1.0, color=color, linewidth=2)
+for key, color, _ in plot_vars:
+    arr = results[key]
+    ax.plot(arr.T, alpha=alpha_val, color=color, linewidth=0.6, rasterized=True)
+    ax.plot(np.nanmedian(arr, axis=0), color=color, linewidth=2, zorder=3)
 
-plt.ylim(-1, 1)
-plt.xlabel("Time")
-plt.ylabel("Value")
-plt.title("Empirical Case + Recovery (individual resilience)")
-plt.tight_layout()
-#plt.show()
+ax.set_ylim(-1, 1)
+ax.set_xlim(0, arr.shape[1] - 1)
+ax.set_xlabel("Time")
+ax.set_ylabel("Value")
+
+ax.spines[["top", "right"]].set_visible(False)
+ax.tick_params(length=3, width=0.8)
+
+handles = [plt.Line2D([0], [0], color=c, linewidth=2, label=l) for _, c, l in plot_vars]
+handles.append(plt.Line2D([0], [0], color="grey", linewidth=0.6, alpha=0.5,
+                          label="Individual runs"))
+
+ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.16),
+          ncol=3, frameon=False, handlelength=2, columnspacing=1.5)
+
+fig.tight_layout()
+out = Path(__file__).parent / "output" / "ma_volatility.png"
+#fig.savefig(out, dpi=150, bbox_inches="tight")
 
 # %%
 # summary table
@@ -526,33 +552,31 @@ cbar.set_label("Internal Support Balance", fontsize=14)
 
 plt.tight_layout()
 #plt.show()
-out = Path(__file__).parent / "ma_shortrep_support_distro.png"
+out = Path(__file__).parent / "output" /  "ma_shortrep_support_distro.png"
 #plt.savefig(out, dpi=150, bbox_inches="tight")
 
 
 
 # %%
-from scipy.stats import pearsonr, spearmanr
-
 # drop rows where a run fully dissolved (individual_resilience == NaN placeholder)
 clean_df = final_df.dropna(subset=["individual_resilience", "external_social_support",
                                     "internal_support_given", "internal_support_received"])
 
-# ---- 1. individual resilience vs internal social support (received) ----
+# individual resilience vs internal social support (received)
 r_int, p_int = pearsonr(clean_df["individual_resilience"], clean_df["internal_support_received"])
 rho_int, ps_int = spearmanr(clean_df["individual_resilience"], clean_df["internal_support_received"])
 print(f"Resilience vs internal social support (received):")
 print(f"  Pearson  r = {r_int:.3f} (p = {p_int:.3g})")
 print(f"  Spearman ρ = {rho_int:.3f} (p = {ps_int:.3g})")
 
-# ---- 2. individual resilience vs external social support ----
+# individual resilience vs external social support
 r_ext, p_ext = pearsonr(clean_df["individual_resilience"], clean_df["external_social_support"])
 rho_ext, ps_ext = spearmanr(clean_df["individual_resilience"], clean_df["external_social_support"])
 print(f"\nResilience vs external social support:")
 print(f"  Pearson  r = {r_ext:.3f} (p = {p_ext:.3g})")
 print(f"  Spearman ρ = {rho_ext:.3f} (p = {ps_ext:.3g})")
 
-# ---- 3. group by external_social_support level ----
+# group by external_social_support level 
 grouped = clean_df.groupby("external_social_support").agg(
     mean_resilience=("individual_resilience", "mean"),
     mean_support_given=("internal_support_given", "mean"),
