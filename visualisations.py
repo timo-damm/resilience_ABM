@@ -214,21 +214,21 @@ ax.plot(B_m[0], rhat_m[0], "ko", markersize=6, zorder=11)
 ax.axhline(0.0, linestyle="--", color="grey")
 ax.set_xlim(0, 1)
 ax.set_ylim(-1, 1)
-ax.set_xlabel("Causes of Burnout", fontsize=14)
+ax.set_xlabel("Internal stress", fontsize=14)
 ax.set_ylabel("Resilience", fontsize=14)
 #ax.set_title("Ego-Projection, Reproducing Fieldwork", fontsize=14)
 
 mappable = plt.cm.ScalarMappable(cmap=cmap, norm=color_norm)
 mappable.set_array([])
 cbar = plt.colorbar(mappable, ax=ax)
-cbar.set_label("Average Internal Social Support", fontsize=14)
+cbar.set_label("Average internal social support", fontsize=14)
 
 # group resilience (dotted) with the same pink bands
 ax_right = ax.twinx()
 ax_right.set_ylim(-1, 1)
 draw_bands(ax_right, B_m, R_s, alpha95=0.25, alpha50=0.25, zorder=6)
 line_right, = ax_right.plot(B_m, R_m, linestyle=":", color="black", linewidth=2,
-                            label="Average SMO resilience")
+                            label="Average group resilience")
 ax_right.set_yticks([])
 ax_right.tick_params(right=False, labelright=False)
 
@@ -242,7 +242,7 @@ ax.legend(handles=[line_left_proxy, line_right, band95_proxy, band50_proxy],
 
 plt.tight_layout()
 out = Path(__file__).parent / "output" / "ma_shortrep.png"
-#fig.savefig(out, dpi=150, bbox_inches="tight")
+fig.savefig(out, dpi=150, bbox_inches="tight")
 
 # ---- MECHANISM COMPARISON FIGURE ----
 # %%
@@ -386,8 +386,8 @@ import pandas as pd
 empirical_df = pd.read_csv(Path(__file__).parent / "output" / "empirical_sweep.csv")
 ma_df = pd.read_csv(Path(__file__).parent / "output" / "ma_sweep.csv")
 
-empirical_df["source"] = "Ego Projection"
-ma_df["source"] = "Memory-Based Strategy"
+empirical_df["source"] = "Ego projection"
+ma_df["source"] = "Memory-based strategy"
 
 combined_df = pd.concat([empirical_df, ma_df], ignore_index=True)
 
@@ -402,8 +402,8 @@ plt.rcParams.update({
 LABEL_FS = 14   
 
 STYLE_BY_SOURCE = {
-    "Ego Projection":        {"color": "#1f3a93", "marker": "o", "linestyle": "-"},
-    "Memory-Based Strategy": {"color": "#e69f00", "marker": "s", "linestyle": "--"},
+    "Ego projection":        {"color": "#1f3a93", "marker": "o", "linestyle": "-"},
+    "Memory-based strategy": {"color": "#e69f00", "marker": "s", "linestyle": "--"},
 }
 
 
@@ -426,14 +426,14 @@ def plot_metric(ax, df, metric, title):
 fig, axes = plt.subplots(2, 1, figsize=(7, 8), sharex=True)
 
 plot_metric(axes[0], combined_df, "mean_individual_resilience",
-            "Individual Resilience")
+            "Individual resilience")
 plot_metric(axes[1], combined_df, "group_resilience",
-            "Group Resilience")
+            "Group resilience")
 
-axes[1].set_xlabel("Time of Repression Decrease", fontsize=LABEL_FS)
+axes[1].set_xlabel("Time of external stress decrease", fontsize=LABEL_FS)
 
-fig.suptitle("Individual and Group Resilience Across Repression Durations",
-             fontsize=LABEL_FS, y=0.98)
+#fig.suptitle("Individual and group resilience across external stress durations",
+#             fontsize=LABEL_FS, y=0.98)
 
 plt.tight_layout()
 plt.savefig(Path(__file__).parent / "output" / "resilience_comparison_apa.png", dpi=300, bbox_inches="tight")

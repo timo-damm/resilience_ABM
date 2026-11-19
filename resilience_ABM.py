@@ -436,10 +436,10 @@ alpha_val = 0.05
 plot_vars = [
     ("group_resilience",            "tab:blue",   "Group resilience"),
     ("mean_individual_resilience",  "tab:orange", "Mean individual resilience"),
-    ("causes_of_burnout",           "tab:red",    "Causes of burnout"),
+    ("causes_of_burnout",           "tab:red",    "Internal stress"),
     ("internal_social_support",     "tab:green",  "Internal social support"),
     ("mean_external_social_support","tab:purple", "Mean external social support"),
-    ("repression",                  "black",      "Repression"),
+    ("repression",                  "black",      "External stress"),
 ]
 
 for key, color, _ in plot_vars:

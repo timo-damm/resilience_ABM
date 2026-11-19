@@ -203,15 +203,15 @@ for rep_param, val_dict in rep_results.items():
         })
 
 df = pd.DataFrame(rows)
-df.to_csv(Path(__file__).parent / "output" / "ofat_summary_new.csv", index=False)
+#df.to_csv(Path(__file__).parent / "output" / "ofat_summary_new.csv", index=False)
 
 # %%
 # ── plot config ───────────────────────────────────────────────────────────────
 PARAM_LABELS = {
-    "group_resilience":  "Initial SMO Resilience",
-    "causes_of_burnout": "Initial Causes of Burnout",
-    "rep_low":           "Repression Low (rep_low)",
-    "rep_high":          "Repression High (rep_high)",
+    "group_resilience":  "Initial group resilience",
+    "causes_of_burnout": "Initial internal stress",
+    "rep_low":           "External stress Low",
+    "rep_high":          "External stress high(rep_high)",
 }
 COLOR = "steelblue"
 
@@ -376,18 +376,18 @@ LOWER = [-1.0, -1.0, 0.0, 0.0, 0.5]
 UPPER = [ 1.0,  1.0, 1.0, 0.5, 1.0]
 
 FEATURE_LABELS = {
-    "init_indiv_res": "Initial\nIndiv. Resilience",
-    "init_group_res": "Initial\nGroup Resilience",
-    "init_cob":       "Initial\nCauses of Burnout",
-    "rep_low":        "Repression\nLow",
-    "rep_high":       "Repression\nHigh",
+    "init_indiv_res": "Initial\nindiv. resilience",
+    "init_group_res": "Initial\ngroup resilience",
+    "init_cob":       "Initial\ninternal stress",
+    "rep_low":        "External stress\nlow",
+    "rep_high":       "External stress\nhigh",
 }
 LATEX_LABELS = {
-    "init_indiv_res": r"Individual Resilience ($\hat{r}$)",
-    "init_group_res": r"Group Resilience ($R$)",
-    "init_cob":       r"Causes of Burnout ($B$)",
-    "rep_low":        r"Stressors Minimum ($\rho_{min}$)",
-    "rep_high":       r"Stressors Maximum ($\rho_{max}$)",
+    "init_indiv_res": r"Individual resilience ($\hat{r}$)",
+    "init_group_res": r"Group resilience ($R$)",
+    "init_cob":       r"Internal stress ($\sigma_{int}$)",
+    "rep_low":        r"External stress minimum ($\sigma_{ext, min}$)",
+    "rep_high":       r"External stress maximum ($\sigma_{ext, max}$)",
 }
 
 # ── Latin hypercube sample (replaces independent uniform draws) ───────────────
@@ -594,6 +594,8 @@ fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"\nSaved {out.name}")
 
+
+#%%
 # ── Figure 5: partial regression plots (with LOWESS to show non-linearity) ───
 fig, axes = plt.subplots(1, k, figsize=(4 * k, 4), sharey=True)
 
@@ -631,7 +633,7 @@ fig.suptitle(
     fontsize=11,
 )
 plt.tight_layout()
-out = Path(__file__).parent / "output" / "output" /  "gsa_partial_regression.png"
+out = Path(__file__).parent / "output" / "gsa_partial_regression.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Saved {out.name}")
