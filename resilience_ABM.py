@@ -164,7 +164,7 @@ def timestep_update(G, cfg: ModelConfig):
         
          # each neighbour's need  
         needs = {
-            nb: max(0.0, cfg.tau - G.nodes[nb]["social_support"] - G.nodes[n]["individual_resilience"]) #change between nb and n here to adjust between the two variants
+            nb: max(0.0, cfg.tau - G.nodes[nb]["social_support"] - G.nodes[nb]["individual_resilience"]) #change between nb and n here to adjust between the two variants
             for nb in neighbors
         }
         total_need = sum(needs.values())

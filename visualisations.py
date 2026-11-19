@@ -90,8 +90,8 @@ t_eval = np.arange(cfg.T)
 
 # ---------------------------------------------------------------------
 # background : grid of ODE trajectories under real repression
-n_rhat = 11 #21 before, was too cluttered
-n_B = 11
+n_rhat = 21 #21 before, was too cluttered
+n_B = 21
 R_fixed = 0.0
 
 rhat_grid_vals = np.linspace(-1, 1, n_rhat)
@@ -162,12 +162,14 @@ for y0 in initial_conditions:
     ax.plot(B[0], rhat[0], "o", color="k", markersize=5, alpha=0.6)
 
 
-#ax.set_xlabel("Causes of Burnout", fontsize=14)
+#ax.set_xlabel("Internal stress", fontsize=14)
 #ax.set_ylabel("Resilience", fontsize=14)
-#ax.set_title(r"Phase trajectories at $\rho = 0.2$", fontsize=14)
+#ax.set_title(r"Phase trajectories at $\sigma_{ext} = 0.2$", fontsize=14)
 
-#out = Path(__file__).parent / "output" / "phase_2D_replow.png"
+#out = Path(__file__).parent / "output" / "phase_plot.png"
 #fig.savefig(out, dpi=150, bbox_inches="tight")
+
+
 
 ax.add_patch(
     Rectangle(
@@ -430,7 +432,7 @@ plot_metric(axes[0], combined_df, "mean_individual_resilience",
 plot_metric(axes[1], combined_df, "group_resilience",
             "Group resilience")
 
-axes[1].set_xlabel("Time of external stress decrease", fontsize=LABEL_FS)
+axes[1].set_xlabel("External stress duration", fontsize=LABEL_FS)
 
 #fig.suptitle("Individual and group resilience across external stress durations",
 #             fontsize=LABEL_FS, y=0.98)
